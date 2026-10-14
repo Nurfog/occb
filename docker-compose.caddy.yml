@@ -1,0 +1,42 @@
+name: occb-caddy-dev
+
+# Satélite Caddy (dev): servidor web que expone el backend en http://localhost.
+# Se integra a la red principal del backend ("occb-dev", externa).
+# En prod, Caddy vive en su propio proyecto unido a la red "occb-edge".
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: occb-caddy-dev
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy-data-dev:/data
+      - caddy-config-dev:/config
+    networks:
+      - edge
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+networks:
+  edge:
+    name: occb-dev
+    external: true
+
+volumes:
+  caddy-data-dev:
+  caddy-config-dev:

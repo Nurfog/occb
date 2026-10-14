@@ -1,0 +1,51 @@
+name: occb-backend-dev
+
+# Proyecto SOLO backend (contenedor principal).
+# Crea la red "occb-dev", a la que se integran los satélites:
+#   docker-compose.db.yml    (Postgres 18 + pgvector + Redis, dev)
+#   docker-compose.caddy.yml (Caddy como servidor web, dev)
+# La DB externa debe ser alcanzable vía DATABASE_URL (.env.dev).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: occb-backend:dev
+    restart: unless-stopped
+    env_file:
+      - .env.dev
+    environment:
+      # Dentro de la red, la DB se alcanza como host "db".
+      DATABASE_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:?}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379
+    # Puerto solo en loopback para depurar. El tráfico real entra por Caddy.
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    networks:
+      - edge
+    user: "10000:10000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+# Red principal: el backend la crea; db y caddy (externos) se le unen.
+networks:
+  edge:
+    name: occb-dev

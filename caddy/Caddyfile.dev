@@ -1,0 +1,41 @@
+# Caddy DEV — http://localhost (sin TLS). El frontend (proyecto separado)
+# consume el API en http://localhost/api/v1/* ; debug directo en :8000.
+# "backend" resuelve por DNS interno de la red occb-dev.
+{
+	auto_https off
+	admin off
+}
+
+http://localhost {
+	encode gzip
+
+	# Límite de cuerpo (defensa en profundidad; el backend también limita a 1MB).
+	request_body {
+		max_size 2MB
+	}
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		respond "OCCB backend (dev). Usa /api/*" 404
+	}
+
+	# Cabeceras de seguridad (el backend también las emite).
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

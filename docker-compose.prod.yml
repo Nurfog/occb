@@ -1,0 +1,45 @@
+name: occb-backend-prod
+
+# Proyecto SOLO backend (prod).
+# - Sin puertos publicados: solo el contenedor de Caddy (proyecto aparte,
+#   misma red Docker) alcanza al backend en 8000.
+# - DATABASE_URL / REDIS_URL apuntan a los proyectos externos.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: occb-backend:prod
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    networks:
+      - edge
+    user: "10000:10000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+# Red compartida con el proyecto Caddy (él la crea o se crea con
+# `docker network create occb-edge`).
+networks:
+  edge:
+    name: occb-edge
+    external: true

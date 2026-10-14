@@ -1,0 +1,18 @@
+# Entorno local (nunca commitear)
+.env.dev
+.env.prod
+.env*.local
+
+# Rust
+backend/target/
+backend/*.rs.bk
+
+# Datos locales
+backups/
+uploads/
+
+# SO / editores
+.DS_Store
+.idea/
+.vscode/
+*.swp
