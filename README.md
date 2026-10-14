@@ -169,12 +169,33 @@ programados (`backup-db.sh`), `RUST_LOG=info`.
 ## Operación
 
 ```bash
-make dev | make dev-logs | make dev-down
+make deps-check | make deps          # auditar / instalar SO + stack
+make dev | make dev-logs | make dev-down   # stack dev completo
+make db-up | make db-down | make db-logs   # solo satélite DB
+make caddy-up | make caddy-down            # solo satélite Caddy
+make stack-up | make stack-down            # alias de dev / dev-down+db-down
 make migrate-dev | make migrate-prod
 make backup-dev  | make backup-prod
 ./scripts/restore-db.sh prod backups/occb_prod_....dump.gz
-make check       # valida ambos compose
+make check       # valida los 4 compose
 make test        # cargo test (8 tests, sin DB)
+```
+
+### Puertos en dev
+
+Publicados en loopback/borde, configurables por entorno (útil con stacks
+en paralelo). Valores por defecto:
+
+| Variable | Defecto | Servicio |
+|---|---|---|
+| `BACKEND_PORT` | 8000 | backend (debug directo) |
+| `POSTGRES_PORT` | 5432 | postgres |
+| `REDIS_PORT` | 6379 | redis |
+| `CADDY_HTTP_PORT` / `CADDY_HTTPS_PORT` | 80 / 443 | caddy |
+
+```bash
+BACKEND_PORT=8001 POSTGRES_PORT=5433 REDIS_PORT=6380 \
+CADDY_HTTP_PORT=8080 CADDY_HTTPS_PORT=8443 make dev
 ```
 
 ## Tests
