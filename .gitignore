@@ -16,3 +16,6 @@ uploads/
 .idea/
 .vscode/
 *.swp
+
+# Nota de sesion local (no versionar)
+sesion.md
