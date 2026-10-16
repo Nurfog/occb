@@ -11,12 +11,15 @@ mod handlers;
 mod middleware;
 mod models;
 mod password;
+mod queries;
+mod repositories;
 mod routes;
+mod services;
 mod state;
 
 use std::{net::SocketAddr, time::Duration};
 
-use axum::http::{header, HeaderName, Method, StatusCode};
+use axum::http::{HeaderName, Method, StatusCode, header};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -24,7 +27,7 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{config::AppEnv, middleware::rate_limit::RateLimiter};
 
@@ -100,16 +103,41 @@ async fn main() {
     );
 
     let pool = db::create_pool(&cfg).await;
+    // Worker de webhooks (stub sin despacho HTTP; observa pendientes en Postgres).
+    let webhook_pool = pool.clone();
+    let webhook_handle = tokio::spawn(crate::services::webhook_worker::start_worker(webhook_pool));
+    let webhook_abort = webhook_handle.abort_handle();
     let state = state::AppState {
         db: pool,
         limiter: RateLimiter::new(cfg.rate_limit_per_minute),
+        strict_limiter: RateLimiter::new(10),
+        smtp: cfg.smtp.clone(),
+        upload: cfg.upload.clone(),
+        http_client: state::AppState::http_client(),
         config: cfg.clone(),
     };
 
+    // El directorio de uploads debe existir antes de servir descargas.
+    // No es fatal: el contenedor corre con FS de solo lectura y el default
+    // apunta a /tmp (tmpfs escribible). Si no se puede crear, se avisa y el
+    // endpoint de upload fallará de forma natural al escribir.
+    if let Err(e) = tokio::fs::create_dir_all(&state.upload.dir).await {
+        tracing::warn!(
+            "no se pudo crear UPLOAD_DIR '{}': {e} (upload/download devolverá error)",
+            state.upload.dir
+        );
+    }
+
     let request_id = HeaderName::from_static(REQUEST_ID_HEADER);
+    // Límite global de cuerpo: 12 MB mínimo para permitir uploads de
+    // documentos (MAX_FILE_SIZE_MB=10 + sobrecarga multipart). Seguridad: es
+    // solo un tope global anti-abuso; cada endpoint impone además sus propios
+    // límites (streaming con corte en upload_document, 2 MB en import CSV).
+    // No subir sin revisar memoria/DoS tras el proxy.
+    let body_limit = cfg.body_limit_bytes.max(12 * 1024 * 1024);
     let app = middleware::security_headers::apply(routes::router(state), cfg.env.is_prod())
         .layer(build_cors(&cfg))
-        .layer(RequestBodyLimitLayer::new(cfg.body_limit_bytes))
+        .layer(RequestBodyLimitLayer::new(body_limit))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(10),
@@ -149,4 +177,5 @@ async fn main() {
     .with_graceful_shutdown(shutdown)
     .await
     .expect("error del servidor");
+    webhook_abort.abort();
 }

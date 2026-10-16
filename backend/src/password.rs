@@ -4,8 +4,8 @@
 //! - `verify_password` es tiempo-constante (lo garantiza argon2).
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
 use crate::error::AppError;
@@ -37,12 +37,24 @@ pub fn hash_password(pw: &str) -> Result<String, AppError> {
 }
 
 pub fn verify_password(hash: &str, pw: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(hash) else {
-        return false;
-    };
-    Argon2::default()
-        .verify_password(pw.as_bytes(), &parsed)
-        .is_ok()
+    // Nuevos hashes: Argon2id. Fallback: bcrypt (origen, 8..72) para
+    // convivencia durante la migración. `login` re-hashea a Argon2 al éxito.
+    if let Ok(parsed) = PasswordHash::new(hash)
+        && Argon2::default()
+            .verify_password(pw.as_bytes(), &parsed)
+            .is_ok()
+    {
+        return true;
+    }
+    if hash.starts_with("$2") {
+        return bcrypt::verify(pw, hash).unwrap_or(false);
+    }
+    false
+}
+
+/// `true` si el hash NO es Argon2id y conviene migrarlo (bcrypt legacy).
+pub fn needs_rehash(hash: &str) -> bool {
+    hash.starts_with("$2")
 }
 
 #[cfg(test)]
@@ -56,6 +68,18 @@ mod tests {
         assert!(verify_password(&hash, pw));
         assert!(!verify_password(&hash, "otra-otra-otra-000"));
         assert!(!verify_password("no-es-un-hash", pw));
+    }
+
+    #[test]
+    fn bcrypt_legacy_verifica_y_marca_rehash() {
+        // Hash bcrypt de "password-bcrypt-123" (cost 4 para test rápido).
+        let legacy = bcrypt::hash("password-bcrypt-123", 4).expect("bcrypt hash");
+        assert!(legacy.starts_with("$2"));
+        assert!(verify_password(&legacy, "password-bcrypt-123"));
+        assert!(!verify_password(&legacy, "otra-otra-otra-000"));
+        assert!(needs_rehash(&legacy));
+        let argon = hash_password("password-bcrypt-123").expect("argon hash");
+        assert!(!needs_rehash(&argon));
     }
 
     #[test]

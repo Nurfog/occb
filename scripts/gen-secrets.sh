@@ -19,8 +19,10 @@ fi
 command -v openssl >/dev/null || { echo "openssl no encontrado"; exit 1; }
 
 JWT="$(openssl rand -base64 48)"
+ENC_KEY="$(openssl rand -base64 32)"
 
-sed -e "s|^JWT_SECRET=.*|JWT_SECRET=$JWT|" "$SRC" > "$DST.tmp"
+sed -e "s|^JWT_SECRET=.*|JWT_SECRET=$JWT|" \
+    -e "s|^TOKEN_ENCRYPTION_KEY=.*|TOKEN_ENCRYPTION_KEY=$ENC_KEY|" "$SRC" > "$DST.tmp"
 
 if [[ "$MODE" == "dev" ]]; then
   # En dev todo queda usable sin edición manual: passwords hex (seguras en URLs).
