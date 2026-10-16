@@ -38,6 +38,8 @@ pub struct AssignTagRequest {
 }
 
 #[derive(Debug, Serialize)]
+// Fila de `entity_tags` con join (contrato; el endpoint devuelve `Tag` + fecha por separado).
+#[allow(dead_code)]
 pub struct EntityTag {
     pub tag: Tag,
     pub assigned_at: DateTime<Utc>,

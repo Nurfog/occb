@@ -5,8 +5,7 @@
 //!   (`companies.view/create/edit/delete`) vía `UserPermissions`.
 //! - `BadRequest` origen -> `AppError::Validation`; `Conflict`/`Internal`
 //!   destino son unitarios (sin mensaje al cliente).
-//! - Auditoría omitida (otro grupo).
-//!   // TODO port: requiere audit (insert_audit_log created/updated/deleted).
+//! - Auditoría best-effort incluida.
 //! - Orden con lista blanca propia (`normalize_company_sort`); el origen
 //!   reutilizaba la de contactos (`ORDER BY first_name` inexistente aquí).
 
@@ -103,7 +102,7 @@ pub async fn list_companies(
 
 pub async fn create_company(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Json(input): Json<CreateCompany>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -131,7 +130,16 @@ pub async fn create_company(
     .fetch_one(&state.db)
     .await?;
 
-    // TODO port: requiere audit (insert_audit_log "created"/"company").
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "create",
+        "company",
+        company.id,
+        None,
+        Some(serde_json::json!(company)),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(company)))
 }
 
@@ -157,7 +165,7 @@ pub async fn get_company(
 
 pub async fn update_company(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateCompany>,
@@ -198,13 +206,22 @@ pub async fn update_company(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    // TODO port: requiere audit ("updated" con old/new).
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "company",
+        id,
+        None,
+        Some(serde_json::json!(company)),
+    )
+    .await;
     Ok(Json(company))
 }
 
 pub async fn delete_company(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -220,7 +237,16 @@ pub async fn delete_company(
         return Err(AppError::NotFound);
     }
 
-    // TODO port: requiere audit ("deleted" con snapshot previo).
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "delete",
+        "company",
+        id,
+        None,
+        None,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

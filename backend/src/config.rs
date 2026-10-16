@@ -60,10 +60,7 @@ impl UploadConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct OauthProviderConfig {
-    // FASE 2: los consumen los handlers de calendar/oauth.
-    #[allow(dead_code)]
     pub client_id: Option<String>,
-    #[allow(dead_code)]
     pub client_secret: Option<String>,
 }
 
@@ -80,8 +77,6 @@ impl OauthProviderConfig {
     }
 
     /// true si el provider está configurado (id + secret presentes).
-    /// FASE 2: lo usan los handlers de calendar/oauth.
-    #[allow(dead_code)]
     pub fn configured(&self) -> bool {
         self.client_id.is_some() && self.client_secret.is_some()
     }
@@ -89,12 +84,8 @@ impl OauthProviderConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct OauthConfig {
-    // FASE 2: los consumen los handlers de calendar/oauth.
-    #[allow(dead_code)]
     pub google: OauthProviderConfig,
-    #[allow(dead_code)]
     pub microsoft: OauthProviderConfig,
-    #[allow(dead_code)]
     pub github: OauthProviderConfig,
 }
 
@@ -132,8 +123,7 @@ pub struct Config {
     pub oauth: OauthConfig,
     /// Clave de 32 bytes para cifrar tokens OAuth (AES-256-GCM).
     /// `None` solo en dev (con warn); en prod el arranque falla si falta.
-    /// NUNCA se loguea. FASE 2: la usan los handlers de calendar/oauth.
-    #[allow(dead_code)]
+    /// NUNCA se loguea.
     pub token_encryption_key: Option<[u8; 32]>,
     pub backend_url: String,
 }

@@ -112,7 +112,6 @@ async fn main() {
         limiter: RateLimiter::new(cfg.rate_limit_per_minute),
         smtp: cfg.smtp.clone(),
         upload: cfg.upload.clone(),
-        oauth: cfg.oauth.clone(),
         http_client: state::AppState::http_client(),
         config: cfg.clone(),
     };

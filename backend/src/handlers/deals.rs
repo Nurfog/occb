@@ -5,9 +5,7 @@
 //!   (`deals.view/create/edit/delete`) vía `UserPermissions`.
 //! - Repo construido desde `state.db` (la plantilla no guarda repos en
 //!   `AppState`; NO añadir campos).
-//! - Auditoría y webhooks omitidos (otros grupos).
-//!   // TODO port: requiere audit (insert_audit_log) y webhooks
-//!   // (enqueue_event + WebhookEvent DealCreated/Updated/Deleted).
+//! - Auditoría best-effort incluida; webhooks omitidos (otro grupo).
 //! - `value` es `f64` con cast `::float8` en el repo/queries.
 //! - Orden con lista blanca local `normalize_deal_sort`.
 
@@ -114,7 +112,7 @@ pub async fn list_deals(
 
 pub async fn create_deal(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Json(input): Json<CreateDeal>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -139,11 +137,20 @@ pub async fn create_deal(
         )
         .await?;
 
-    // TODO port: requiere audit ("created"/"deal") y webhooks (DealCreated).
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "deal_created",
         serde_json::json!({ "id": deal.id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "create",
+        "deal",
+        deal.id,
+        None,
+        Some(serde_json::json!(deal)),
     )
     .await;
     Ok((StatusCode::CREATED, Json(deal)))
@@ -167,7 +174,7 @@ pub async fn get_deal(
 
 pub async fn update_deal(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateDeal>,
@@ -181,11 +188,20 @@ pub async fn update_deal(
     repo.find_by_id(id).await?.ok_or(AppError::NotFound)?;
     let deal = repo.update(id, &input).await?.ok_or(AppError::NotFound)?;
 
-    // TODO port: requiere audit ("updated") y webhooks (DealUpdated).
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "deal_updated",
         serde_json::json!({ "id": id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "deal",
+        id,
+        None,
+        Some(serde_json::json!(deal)),
     )
     .await;
     Ok(Json(deal))
@@ -193,7 +209,7 @@ pub async fn update_deal(
 
 pub async fn delete_deal(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -206,11 +222,20 @@ pub async fn delete_deal(
         .ok_or(AppError::NotFound)?;
     let _ = old;
 
-    // TODO port: requiere audit ("deleted") y webhooks (DealDeleted).
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "deal_deleted",
         serde_json::json!({ "id": id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "delete",
+        "deal",
+        id,
+        None,
+        None,
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -325,7 +350,7 @@ pub async fn import_deals(
 
 pub async fn update_deal_stage(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateDealStage>,
@@ -340,11 +365,20 @@ pub async fn update_deal_stage(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    // TODO port: requiere audit ("stage_updated") y webhooks (DealUpdated).
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "deal_updated",
         serde_json::json!({ "id": id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "deal",
+        id,
+        None,
+        Some(serde_json::json!(deal)),
     )
     .await;
     Ok(Json(deal))

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+// Tipo fila de `calendar_tokens` (contrato DB; los handlers mapean por columnas).
+#[allow(dead_code)]
 pub struct CalendarToken {
     pub id: Uuid,
     pub user_id: Uuid,

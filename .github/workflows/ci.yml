@@ -35,10 +35,7 @@ jobs:
       - name: Format check
         run: cargo fmt -- --check
       - name: Clippy
-        # -D warnings en todo salvo dead_code: quedan restos del port inicial
-        # (shims de compat) pendientes de eliminar; correctness/suspicious/
-        # style siguen estrictos.
-        run: cargo clippy --locked --all-targets -- -D warnings -A dead-code
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Tests
         run: cargo test --locked
       - name: Build

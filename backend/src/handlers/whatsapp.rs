@@ -105,6 +105,9 @@ pub struct WebhookChange {
 #[derive(Debug, Deserialize)]
 pub struct WebhookValue {
     pub messages: Option<Vec<WebhookMessage>>,
+    // Contrato del payload de Meta: hoy solo se lee `messages`; se conserva
+    // `metadata` para no romper la deserialización si Meta lo envía.
+    #[allow(dead_code)]
     pub metadata: Option<WebhookMetadata>,
 }
 
@@ -123,7 +126,10 @@ pub struct WebhookText {
 
 #[derive(Debug, Deserialize)]
 pub struct WebhookMetadata {
+    // Contrato de Meta (display/phone Number ID). Deserialize-only.
+    #[allow(dead_code)]
     pub display_phone_number: Option<String>,
+    #[allow(dead_code)]
     pub phone_number_id: Option<String>,
 }
 

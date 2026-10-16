@@ -4,8 +4,7 @@
 //! Adaptación a la plantilla segura:
 //! - Auth: JWT válido (`Extension<Claims>`) + RBAC fino
 //!   (`activities.view/create/edit/delete`) vía `UserPermissions`.
-//! - Auditoría omitida (otro grupo).
-//!   // TODO port: requiere audit (insert_audit_log).
+//! - Auditoría best-effort incluida.
 //! - `list_activities`: filtros con binds (`$n`); solo se interpolan los
 //!   índices de parámetro. `activity_type` se valida contra lista blanca.
 //! - `update_activity`: el origen bindeaba `recurrence_*` sin hueco en el
@@ -126,7 +125,7 @@ pub async fn list_activities(
 
 pub async fn create_activity(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Json(input): Json<CreateActivity>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -154,13 +153,22 @@ pub async fn create_activity(
     .fetch_one(&state.db)
     .await?;
 
-    // TODO port: requiere audit ("created"/"activity").
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "create",
+        "activity",
+        activity.id,
+        None,
+        Some(serde_json::json!(activity)),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(activity)))
 }
 
 pub async fn update_activity(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateActivity>,
@@ -204,13 +212,22 @@ pub async fn update_activity(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    // TODO port: requiere audit ("updated" con old/new).
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "activity",
+        id,
+        None,
+        Some(serde_json::json!(activity)),
+    )
+    .await;
     Ok(Json(activity))
 }
 
 pub async fn delete_activity(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -226,13 +243,22 @@ pub async fn delete_activity(
         return Err(AppError::NotFound);
     }
 
-    // TODO port: requiere audit ("deleted" con snapshot previo).
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "delete",
+        "activity",
+        id,
+        None,
+        None,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn complete_activity(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -252,6 +278,15 @@ pub async fn complete_activity(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    // TODO port: requiere audit ("completed").
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "activity",
+        id,
+        None,
+        Some(serde_json::json!(activity)),
+    )
+    .await;
     Ok(Json(activity))
 }

@@ -7,37 +7,14 @@
 //! - `SUM(value)::double precision` ya castea en SQL (origen), `f64` en Rust.
 
 use axum::{Extension, Json, extract::State, response::IntoResponse};
-use serde::Serialize;
 
 use crate::middleware::auth_ext::UserPermissions;
-use crate::{auth::Claims, error::AppError, state::AppState};
-
-#[derive(Debug, Serialize)]
-pub struct PipelineReportItem {
-    pub stage: String,
-    pub count: i64,
-    pub total_value: f64,
-    pub avg_value: f64,
-    pub percentage: f64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PipelineReport {
-    pub stages: Vec<PipelineReportItem>,
-    pub total_deals: i64,
-    pub total_value: f64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct WinLossReport {
-    pub won_count: i64,
-    pub lost_count: i64,
-    pub win_rate: f64,
-    pub loss_rate: f64,
-    pub won_value: f64,
-    pub lost_value: f64,
-    pub total_closed: i64,
-}
+use crate::{
+    auth::Claims,
+    error::AppError,
+    models::report::{PipelineReport, PipelineReportItem, WinLossReport},
+    state::AppState,
+};
 
 #[derive(sqlx::FromRow)]
 struct StageRow {

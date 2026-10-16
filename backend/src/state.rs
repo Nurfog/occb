@@ -11,10 +11,6 @@ pub struct AppState {
     pub limiter: RateLimiter,
     pub smtp: crate::config::SmtpConfig,
     pub upload: crate::config::UploadConfig,
-    // FASE 2: los consumen los handlers de calendar/oauth/integraciones.
-    #[allow(dead_code)]
-    pub oauth: crate::config::OauthConfig,
-    #[allow(dead_code)]
     pub http_client: reqwest::Client,
 }
 

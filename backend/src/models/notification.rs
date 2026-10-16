@@ -18,6 +18,8 @@ pub struct Notification {
 }
 
 #[derive(Debug, Deserialize, Validate)]
+// DTO de creación (contrato API; la creación interna no lo usa aún).
+#[allow(dead_code)]
 pub struct CreateNotification {
     pub user_id: Uuid,
     #[validate(length(min = 1, max = 200, message = "title de 1 a 200 caracteres"))]

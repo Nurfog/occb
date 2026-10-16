@@ -4,8 +4,7 @@
 //! - Auth: JWT válido (`Extension<Claims>`) + RBAC fino
 //!   (`contacts.view/create/edit/delete`) vía `UserPermissions`.
 //! - Errores origen `BadRequest` -> `AppError::Validation`.
-//! - Side-effects de auditoría/webhooks omitidos (otros grupos).
-//!   // TODO port: requiere audit (insert_audit_log) y webhooks.
+//! - Side-effects de webhooks incluidos; auditoría best-effort incluida.
 //! - SQL 100% parametrizada en `repositories::contact_repo`; ORDER BY de
 //!   lista blanca; LIKE con `escape_like`.
 
@@ -54,7 +53,7 @@ pub async fn list_contacts(
 
 pub async fn create_contact(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Json(input): Json<CreateContact>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -68,6 +67,16 @@ pub async fn create_contact(
         &state.db,
         "contact_created",
         serde_json::json!({ "id": contact.id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "create",
+        "contact",
+        contact.id,
+        None,
+        Some(serde_json::json!(contact)),
     )
     .await;
     Ok((StatusCode::CREATED, Json(contact)))
@@ -88,7 +97,7 @@ pub async fn get_contact(
 
 pub async fn update_contact(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateContact>,
@@ -105,12 +114,22 @@ pub async fn update_contact(
         serde_json::json!({ "id": id }),
     )
     .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "update",
+        "contact",
+        id,
+        None,
+        Some(serde_json::json!(contact)),
+    )
+    .await;
     Ok(Json(contact))
 }
 
 pub async fn delete_contact(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -123,6 +142,16 @@ pub async fn delete_contact(
         &state.db,
         "contact_deleted",
         serde_json::json!({ "id": id }),
+    )
+    .await;
+    let _ = crate::handlers::audit::insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "delete",
+        "contact",
+        id,
+        None,
+        None,
     )
     .await;
     Ok(StatusCode::NO_CONTENT)

@@ -12,7 +12,6 @@ use rand::RngCore;
 
 /// Cifra `plaintext` con `key` (32 bytes). Devuelve `nonce_hex:ct_hex`.
 /// FASE 2: lo usan los handlers de calendar/oauth para guardar tokens.
-#[allow(dead_code)]
 pub fn encrypt_to_hex(key: &[u8; 32], plaintext: &str) -> Result<String, crate::error::AppError> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| {
         tracing::error!("crypto: clave inválida");
@@ -31,7 +30,6 @@ pub fn encrypt_to_hex(key: &[u8; 32], plaintext: &str) -> Result<String, crate::
 
 /// Descifra un valor `nonce_hex:ct_hex` con `key`.
 /// FASE 2: lo usan los handlers de calendar/oauth para leer tokens.
-#[allow(dead_code)]
 pub fn decrypt_from_hex(key: &[u8; 32], packed: &str) -> Result<String, crate::error::AppError> {
     let (nonce_hex, ct_hex) = packed.split_once(':').ok_or_else(|| {
         tracing::error!("crypto: formato de token cifrado inválido");
@@ -63,7 +61,6 @@ pub fn decrypt_from_hex(key: &[u8; 32], packed: &str) -> Result<String, crate::e
 /// Resuelve la clave de cifrado desde el estado.
 /// Fail-closed fuera de dev: error si no hay clave.
 /// FASE 2: la usan los handlers de calendar/oauth.
-#[allow(dead_code)]
 pub fn require_key(
     key: Option<&[u8; 32]>,
     is_prod: bool,

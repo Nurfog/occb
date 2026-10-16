@@ -151,6 +151,10 @@ pub async fn invalidate_users_by_profile(pool: &sqlx::PgPool, profile_id: &Uuid)
 
 /// Genera un token CSRF opaco (UUID v4). El frontend debe devolverlo en
 /// `X-CSRF-Token` cuando use cookies HttpOnly.
+// Intencionalmente sin cablear: con Bearer en memoria no hay CSRF posible y
+// cablearlo sin cookies rompería todos los mutantes con 403. Cablear solo
+// junto a cookies HttpOnly + `csrf_middleware` en routes.
+#[allow(dead_code)]
 pub fn generate_csrf_token() -> String {
     Uuid::new_v4().to_string()
 }
@@ -187,8 +191,10 @@ pub async fn admin_only_middleware(
 /// - Omite GET/HEAD/OPTIONS y los endpoints de auth (`login`, `register`,
 ///   `refresh`, `forgot-password`, `reset-password`).
 /// - En el resto exige `X-CSRF-Token: <valor de la cookie csrf_token>`.
-/// - NO cableado en `routes.rs` (congelado); el integrador lo añadirá cuando
-///   el frontend use cookies HttpOnly.
+/// - NO cableado en `routes.rs` a propósito (seguridad): sin cookies HttpOnly
+///   no hay superficie CSRF y exigir el header rompería el flujo Bearer.
+///   Cablear solo junto a cookies HttpOnly + `generate_csrf_token` en login.
+#[allow(dead_code)]
 #[allow(clippy::result_large_err)]
 pub async fn csrf_middleware(req: Request, next: Next) -> Result<Response, Response> {
     let method = req.method().clone();

@@ -11,6 +11,9 @@
 use axum::{extract::Request, middleware::Next, response::Response};
 
 /// Middleware de métricas (stub): mide duración para log futuro y delega.
+// Intencionalmente sin cablear: sin backend Prometheus solo añadiría log por
+// request. Cablear con `from_fn(track_metrics)` cuando haya dónde exportar.
+#[allow(dead_code)]
 pub async fn track_metrics(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = normalize_path(req.uri().path());
@@ -28,6 +31,8 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
 
 /// Normaliza una ruta a su plantilla: UUIDs y segmentos numéricos -> `:id`.
 /// p. ej. `/api/v1/users/550e8400-...` -> `/api/v1/users/:id`.
+// Usada solo por `track_metrics` (ver arriba).
+#[allow(dead_code)]
 pub fn normalize_path(path: &str) -> String {
     path.split('/')
         .map(|seg| {
@@ -46,6 +51,7 @@ pub fn normalize_path(path: &str) -> String {
         .join("/")
 }
 
+#[allow(dead_code)]
 fn is_uuid_like(s: &str) -> bool {
     if s.len() != 36 {
         return false;
