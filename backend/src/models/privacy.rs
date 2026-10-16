@@ -85,6 +85,9 @@ pub const ESTADOS_VALIDOS: &[&str] = &[
     "desistida",
 ];
 
+/// Quién presenta la solicitud (los NNA actúan por apoderado/representante).
+pub const RELACIONES_VALIDAS: &[&str] = &["titular", "apoderado", "representante", "otro"];
+
 /// Lista blanca de acciones del staff.
 pub const ACCIONES_VALIDAS: &[&str] = &[
     "verificar",
@@ -126,6 +129,14 @@ fn validar_estado_opt(s: &str) -> Result<(), ValidationError> {
     }
 }
 
+pub(crate) fn validar_relacion_opt(s: &str) -> Result<(), ValidationError> {
+    if RELACIONES_VALIDAS.contains(&s.trim().to_lowercase().as_str()) {
+        Ok(())
+    } else {
+        Err(ValidationError::new("relacion_invalida"))
+    }
+}
+
 fn validar_accion(s: &str) -> Result<(), ValidationError> {
     if ACCIONES_VALIDAS.contains(&s.trim().to_lowercase().as_str()) {
         Ok(())
@@ -151,6 +162,9 @@ pub struct PrivacyRequest {
     pub extended_at: Option<DateTime<Utc>>,
     pub corrections: Option<serde_json::Value>,
     pub legal_hold: Option<String>,
+    pub solicitante_nombre: Option<String>,
+    pub relacion: String,
+    pub documento_ref: Option<String>,
     pub resolution: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -185,6 +199,14 @@ pub struct CreatePrivacyRequest {
     pub contact_id: Option<Uuid>,
     pub corrections: Option<serde_json::Value>,
     pub con_bloqueo: Option<bool>,
+    /// Quién solicita (NNA actúan por apoderado/representante).
+    #[validate(length(max = 200, message = "solicitante max 200 caracteres"))]
+    pub solicitante_nombre: Option<String>,
+    #[validate(custom(function = "validar_relacion_opt"))]
+    pub relacion: Option<String>,
+    /// Referencia documental de la representación (poder, cédula apoderado).
+    #[validate(length(max = 200, message = "documento max 200 caracteres"))]
+    pub documento_ref: Option<String>,
 }
 
 /// Verificación pública de identidad (token opaco de 64 hex).

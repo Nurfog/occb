@@ -49,7 +49,8 @@ use crate::{
 
 const PRIVACY_COLUMNS: &str = "id, contact_id, email, type, status, motivo, \
     identity_verified, verify_token_hash, verify_expires_at, due_at, extended, \
-    extended_at, corrections, legal_hold, resolution, resolved_at, created_at, updated_at";
+    extended_at, corrections, legal_hold, solicitante_nombre, relacion, documento_ref, \
+    resolution, resolved_at, created_at, updated_at";
 
 const PIE_RECLAMO_AGENCIA: &str = "Si no estás de acuerdo con esta resolución, puedes reclamar ante la \
     Agencia de Protección de Datos en 30 días hábiles (art. 41 Ley 21.719).";
@@ -253,9 +254,10 @@ pub async fn create_request(
 
     let fila: (Uuid, DateTime<Utc>) = sqlx::query_as(
         "INSERT INTO privacy_requests (contact_id, email, type, status, motivo, \
-            verify_token_hash, verify_expires_at, due_at, corrections) \
+            verify_token_hash, verify_expires_at, due_at, corrections, \
+            solicitante_nombre, relacion, documento_ref) \
          VALUES ($1, $2, $3::privacy_request_type, 'recibida'::privacy_request_status, \
-            $4, $5, $6, $7, $8) RETURNING id, due_at",
+            $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, due_at",
     )
     .bind(linked_contact)
     .bind(&email)
@@ -265,6 +267,21 @@ pub async fn create_request(
     .bind(token_exp)
     .bind(due_at)
     .bind(input.corrections.clone())
+    .bind(
+        input
+            .solicitante_nombre
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
+    .bind(input.relacion.as_deref().unwrap_or("titular"))
+    .bind(
+        input
+            .documento_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
     .fetch_one(&state.db)
     .await?;
     let (id, due_at_db) = fila;
@@ -929,6 +946,24 @@ async fn ejecutar_supresion(
 ) -> Result<String, AppError> {
     let mut email_previo: Option<String> = None;
     if let Some(cid) = contact_id {
+        // Retención legal (colegios y contratos vigentes): con matrícula o
+        // negocio abierto no hay supresión posible; la vía es denegar
+        // fundadamente (retención legal) y ofrecer el bloqueo. Anonimizar
+        // aquí destruiría la ficha del alumno y violaría deberes de
+        // conservación (contrato educacional, registros MINEDUC).
+        let abiertos: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM deals WHERE contact_id = $1 \
+             AND stage NOT IN ('closed_won', 'closed_lost')",
+        )
+        .bind(cid)
+        .fetch_one(&mut **tx)
+        .await?;
+        if abiertos > 0 {
+            return Err(AppError::Validation(format!(
+                "retención legal: el titular tiene {abiertos} negocio(s) vigente(s) \
+                 (matrícula/contrato); cierre o deniegue fundadamente en vez de suprimir"
+            )));
+        }
         let fila: Option<Option<String>> =
             sqlx::query_scalar("SELECT email::text FROM contacts WHERE id = $1 FOR UPDATE")
                 .bind(cid)
@@ -1278,6 +1313,17 @@ mod tests {
         assert!(!puede_transitar("desistida", "admitir"));
         assert!(!puede_transitar("desconocido", "verificar"));
         assert!(!puede_transitar("recibida", "inexistente"));
+    }
+
+    #[test]
+    fn relacion_solicitante_solo_valores_legales() {
+        use crate::models::privacy::validar_relacion_opt;
+        assert!(validar_relacion_opt("titular").is_ok());
+        assert!(validar_relacion_opt("Apoderado").is_ok());
+        assert!(validar_relacion_opt("representante").is_ok());
+        assert!(validar_relacion_opt("otro").is_ok());
+        assert!(validar_relacion_opt("vecino").is_err());
+        assert!(validar_relacion_opt("").is_err());
     }
 
     #[test]
