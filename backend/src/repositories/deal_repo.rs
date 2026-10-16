@@ -118,14 +118,14 @@ impl PgDealRepo {
         let deals = if let Some(search) = search {
             let pattern = format!("%{}%", crate::models::escape_like(search));
             sqlx::query_as::<_, Deal>(&format!(
-                "{DEAL_SELECT} WHERE d.title ILIKE $1 ESCAPE '\\' ORDER BY d.created_at DESC LIMIT 10000"
+                "{DEAL_SELECT} WHERE d.title ILIKE $1 ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) ORDER BY d.created_at DESC LIMIT 10000"
             ))
             .bind(pattern)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query_as::<_, Deal>(&format!(
-                "{DEAL_SELECT} ORDER BY d.created_at DESC LIMIT 10000"
+                "{DEAL_SELECT} WHERE NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) ORDER BY d.created_at DESC LIMIT 10000"
             ))
             .fetch_all(&self.pool)
             .await?

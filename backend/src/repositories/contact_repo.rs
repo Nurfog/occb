@@ -236,14 +236,14 @@ impl PgContactRepo {
         let contacts = if let Some(search) = search {
             let pattern = format!("%{}%", crate::models::escape_like(search));
             sqlx::query_as::<_, Contact>(&format!(
-                "{BASE_SELECT} WHERE first_name ILIKE $1 ESCAPE '\\' OR last_name ILIKE $1 ESCAPE '\\' OR email ILIKE $1 ESCAPE '\\' ORDER BY created_at DESC LIMIT 10000"
+                "{BASE_SELECT} WHERE (first_name ILIKE $1 ESCAPE '\\' OR last_name ILIKE $1 ESCAPE '\\' OR email ILIKE $1 ESCAPE '\\') AND (blocked IS NULL OR blocked = FALSE) ORDER BY created_at DESC LIMIT 10000"
             ))
             .bind(pattern)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query_as::<_, Contact>(&format!(
-                "{BASE_SELECT} ORDER BY created_at DESC LIMIT 10000"
+                "{BASE_SELECT} WHERE (blocked IS NULL OR blocked = FALSE) ORDER BY created_at DESC LIMIT 10000"
             ))
             .fetch_all(&self.pool)
             .await?

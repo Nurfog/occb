@@ -110,6 +110,7 @@ async fn main() {
     let state = state::AppState {
         db: pool,
         limiter: RateLimiter::new(cfg.rate_limit_per_minute),
+        strict_limiter: RateLimiter::new(10),
         smtp: cfg.smtp.clone(),
         upload: cfg.upload.clone(),
         http_client: state::AppState::http_client(),

@@ -87,8 +87,27 @@ pub async fn rate_limit_middleware(
     req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let ip = client_ip(&req, state.config.trusted_proxy);
-    match state.limiter.check(ip).await {
+    check_with(&state.limiter, &state.config, req, next).await
+}
+
+/// Variante estricta (10/min) para endpoints públicos sensibles
+/// (solicitudes de derechos Ley 21.719): frena spam y enumeración de emails.
+pub async fn strict_rate_limit_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    check_with(&state.strict_limiter, &state.config, req, next).await
+}
+
+async fn check_with(
+    limiter: &RateLimiter,
+    config: &crate::config::Config,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ip = client_ip(&req, config.trusted_proxy);
+    match limiter.check(ip).await {
         Ok((limit, remaining)) => {
             let mut resp = next.run(req).await;
             let h = resp.headers_mut();

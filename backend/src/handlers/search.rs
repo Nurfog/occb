@@ -67,9 +67,11 @@ pub async fn global_search(
         r#"
         SELECT id, first_name, last_name, email
         FROM contacts
-        WHERE first_name ILIKE $1 ESCAPE '\'
+        WHERE (first_name ILIKE $1 ESCAPE '\'
            OR last_name ILIKE $1 ESCAPE '\'
-           OR email ILIKE $1 ESCAPE '\'
+           OR email ILIKE $1 ESCAPE '\')
+          -- Ley 21.719 (bloqueo): no tratar datos bloqueados ni en búsqueda.
+          AND (blocked IS NULL OR blocked = FALSE)
         ORDER BY first_name ASC
         LIMIT $2
         "#,

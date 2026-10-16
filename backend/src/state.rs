@@ -9,6 +9,9 @@ pub struct AppState {
     pub db: sqlx::PgPool,
     pub config: Config,
     pub limiter: RateLimiter,
+    /// Límite estricto (10/min) para endpoints públicos sensibles
+    /// (solicitudes de derechos Ley 21.719): anti-spam y anti-enumeración.
+    pub strict_limiter: RateLimiter,
     pub smtp: crate::config::SmtpConfig,
     pub upload: crate::config::UploadConfig,
     pub http_client: reqwest::Client,

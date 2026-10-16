@@ -1,8 +1,10 @@
 //! Tabla de rutas del API (port completo opencrmccb + health/ready/version).
 //!
 //! - Públicas: health, ready, version, branding, whatsapp webhook, oauth
-//!   callback, auth login/register/refresh/forgot/reset.
-//! - Protegidas: todo el CRM con JWT (`auth_middleware`).
+//!   callback, auth login/register/refresh/forgot/reset, solicitudes de
+//!   derechos Ley 21.719 (estas últimas con rate-limit estricto 10/min).
+//! - Protegidas: todo el CRM con JWT (`auth_middleware`), incluida la
+//!   gestión de solicitudes Ley 21.719 (`privacy.view`/`privacy.manage`).
 //! - Admin: users + webhooks + pipelines/perfiles/branding con
 //!   `auth_middleware` + `admin_only_middleware` (exige `admin.access`).
 //! - `/metrics` NO se expone (ver middleware/metrics stub).
@@ -46,6 +48,21 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/auth/register", post(handlers::auth::register))
         .route("/api/v1/auth/refresh", post(handlers::auth::refresh));
+
+    // ── Públicas Ley 21.719 (sin JWT, rate-limit estricto anti-spam) ──
+    let privacy_public = Router::new()
+        .route(
+            "/api/v1/privacy/requests",
+            post(handlers::privacy::create_request),
+        )
+        .route(
+            "/api/v1/privacy/requests/verify",
+            post(handlers::privacy::verify_request),
+        )
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::rate_limit::strict_rate_limit_middleware,
+        ));
 
     // ── Protegidas (JWT) ──
     let protected = Router::new()
@@ -204,6 +221,20 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/audit/entity/{type}/{id}",
             get(handlers::audit::get_entity_history),
+        )
+        // Privacidad Ley 21.719 (gestión staff; la creación/verificación
+        // pública vive en `privacy_public` con rate-limit estricto)
+        .route(
+            "/api/v1/privacy/requests",
+            get(handlers::privacy::list_requests),
+        )
+        .route(
+            "/api/v1/privacy/requests/stats",
+            get(handlers::privacy::request_stats),
+        )
+        .route(
+            "/api/v1/privacy/requests/{id}",
+            get(handlers::privacy::get_request).patch(handlers::privacy::update_request),
         )
         // Profile (contrato origen)
         .route("/api/v1/auth/me", get(handlers::auth_ext::get_profile))
@@ -452,6 +483,7 @@ pub fn router(state: AppState) -> Router {
         ));
 
     public
+        .merge(privacy_public)
         .merge(protected)
         .merge(admin)
         .layer(from_fn_with_state(

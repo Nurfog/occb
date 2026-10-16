@@ -28,6 +28,7 @@ pub mod email;
 pub mod lead;
 pub mod notification;
 pub mod pagination;
+pub mod privacy;
 pub mod report;
 pub mod tag;
 

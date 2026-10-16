@@ -15,6 +15,7 @@ pub mod health;
 pub mod leads;
 pub mod notifications;
 pub mod oauth;
+pub mod privacy;
 pub mod ready;
 pub mod related;
 pub mod reports;
