@@ -6,7 +6,7 @@
 //!   (cada uso revoca el anterior) y detección de reuso.
 
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -95,6 +95,21 @@ mod tests {
             body_limit_bytes: 1024 * 1024,
             rate_limit_per_minute: 120,
             trusted_proxy: false,
+            smtp: crate::config::SmtpConfig {
+                host: String::new(),
+                port: 587,
+                user: String::new(),
+                password: String::new(),
+                from: String::new(),
+                enabled: false,
+            },
+            upload: crate::config::UploadConfig {
+                dir: "./uploads".into(),
+                max_file_size_mb: 10,
+            },
+            oauth: crate::config::OauthConfig::default(),
+            token_encryption_key: None,
+            backend_url: "http://localhost:8000".into(),
         }
     }
 

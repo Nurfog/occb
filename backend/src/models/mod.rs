@@ -5,6 +5,43 @@
 //! 2. Identificadores dinámicos (ORDER BY) SOLO desde listas blancas.
 //! 3. LIKE con `escape_like` + `ESCAPE '\'`.
 //! 4. LIMIT/OFFSET como enteros acotados y bindeados.
+//!
+//! Submódulos CRM (grupo A): activity, company, contact, deal, pagination,
+//! csv, date_flex. Nota: `Deal.value` es `f64` (sin `rust_decimal` en la
+//! plantilla); el SQL usa `value::float8` en SELECT/RETURNING y agregados.
+
+pub mod activity;
+pub mod company;
+pub mod contact;
+pub mod csv;
+pub mod date_flex;
+pub mod deal;
+// Submódulos CRM (grupo A): activity, company, contact, deal, pagination,
+// csv, date_flex. Nota: `Deal.value` es `f64` (sin `rust_decimal` en la
+// plantilla); el SQL usa `value::float8` en SELECT/RETURNING y agregados.
+//
+// Submódulos CRM (grupo B): lead, tag, audit, document, notification, report.
+pub mod audit;
+pub mod calendar;
+pub mod document;
+pub mod email;
+pub mod lead;
+pub mod notification;
+pub mod pagination;
+pub mod report;
+pub mod tag;
+
+pub use activity::{Activity, CreateActivity, RecurrenceType, UpdateActivity};
+pub use calendar::{
+    CalendarConnectionStatus, CalendarEvent, CalendarQuery, CreateCalendarEvent,
+    UpdateCalendarEvent,
+};
+pub use company::{Company, CreateCompany, UpdateCompany};
+pub use contact::{Contact, ContactFilters, CreateContact, UpdateContact};
+pub use csv::{ImportResult, escape_csv, parse_csv_rows, parse_deal_import_row};
+pub use deal::{CreateDeal, Deal, DealStage, UpdateDeal, UpdateDealStage};
+pub use email::{CreateEmailTemplate, EmailLog, EmailTemplate, SendEmail, UpdateEmailTemplate};
+pub use pagination::{PaginatedResponse, PaginationParams};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

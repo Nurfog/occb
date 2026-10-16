@@ -11,7 +11,7 @@
 //!   memoria; nunca en `localStorage` si hay XSS). Si el frontend pasa a
 //!   cookies HttpOnly, añadir CSRF double-submit.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
+use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    auth::{create_access_token, hash_refresh_token, new_refresh_token, Claims},
+    auth::{Claims, create_access_token, hash_refresh_token, new_refresh_token},
     error::AppError,
     models::{LoginInput, RefreshInput, RegisterInput, UserPublic},
     password,
@@ -83,18 +83,61 @@ pub async fn register(
     Json(input): Json<RegisterInput>,
 ) -> Result<impl IntoResponse, AppError> {
     input.validate()?;
+    // Solo-setup (contrato origen): el primer usuario es admin; después se
+    // bloquea y los nuevos usuarios los crea un admin (POST /api/v1/users).
+    // Advisory lock + check en tx: evita que dos registros paralelos creen
+    // dos admins (TOCTOU).
+    let mut tx = state.db.begin().await.map_err(|_| AppError::Internal)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('register'))")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users LIMIT 1")
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    if existing.is_some() {
+        return Err(AppError::Forbidden);
+    }
+    let admin_profile: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM profiles WHERE name = 'Administrador' LIMIT 1")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::Internal)?;
+
     let email = input.email.trim().to_lowercase();
+    let name = input.name.trim().to_string();
+    // Parte `name` en first/last para el esquema CRM (004).
+    let mut parts = name.splitn(2, ' ');
+    let first = parts.next().unwrap_or("").to_string();
+    let last = parts.next().unwrap_or("").to_string();
     let hash = password::hash_password(&input.password)?;
     let user = sqlx::query_as::<_, UserRow>(
-        "INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3)
+        "INSERT INTO users (email, name, first_name, last_name, profile_id, password_hash)
+         VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6)
          RETURNING id, email, name, password_hash, created_at",
     )
     .bind(&email)
-    .bind(input.name.trim())
+    .bind(&name)
+    .bind(&first)
+    .bind(&last)
+    .bind(admin_profile)
     .bind(&hash)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
-    let (access, refresh) = issue_pair(&state, &user).await?;
+    let admin_id = user.id;
+    let access = crate::auth::create_access_token(user.id, &state.config)?;
+    let refresh = crate::auth::new_refresh_token();
+    let expires_at =
+        chrono::Utc::now() + chrono::Duration::days(state.config.refresh_token_ttl_days);
+    sqlx::query("INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
+        .bind(admin_id)
+        .bind(crate::auth::hash_refresh_token(&refresh))
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    tx.commit().await.map_err(|_| AppError::Internal)?;
     Ok((
         StatusCode::CREATED,
         Json(pair_response(
@@ -125,6 +168,16 @@ pub async fn login(
     };
     if !password::verify_password(&user.password_hash, &input.password) {
         return Err(AppError::Unauthorized);
+    }
+    // Migración oportunista bcrypt → Argon2id (fire-and-forget, no bloquea login).
+    if password::needs_rehash(&user.password_hash)
+        && let Ok(new_hash) = password::hash_password(&input.password)
+    {
+        let _ = sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(&new_hash)
+            .bind(user.id)
+            .execute(&state.db)
+            .await;
     }
     let (access, refresh) = issue_pair(&state, &user).await?;
     Ok(Json(pair_response(
@@ -217,17 +270,4 @@ pub async fn logout(
         .execute(&state.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn me(
-    State(state): State<AppState>,
-    Extension(claims): Extension<Claims>,
-) -> Result<impl IntoResponse, AppError> {
-    let user: Option<UserPublic> = sqlx::query_as::<_, UserPublic>(
-        "SELECT id, email, name, created_at FROM users WHERE id = $1",
-    )
-    .bind(claims.sub)
-    .fetch_optional(&state.db)
-    .await?;
-    user.map(Json).ok_or(AppError::Unauthorized)
 }

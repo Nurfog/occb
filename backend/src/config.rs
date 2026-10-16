@@ -5,6 +5,9 @@
 //! - `JWT_SECRET` >= 32 caracteres; en prod se rechazan valores de ejemplo.
 //! - `CORS_ORIGINS` es lista cerrada (nunca `*` con credenciales).
 //! - Los secretos JAMÁS se escriben en logs (ver `database_url_redacted`).
+//!   Esto incluye `SMTP_PASSWORD`, `OAUTH_*_SECRET` y `TOKEN_ENCRYPTION_KEY`.
+//! - `TOKEN_ENCRYPTION_KEY` (base64 de 32 bytes) es obligatoria en prod;
+//!   en dev puede omitirse (cifrado de tokens deshabilitado, con warn).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEnv {
@@ -33,6 +36,79 @@ impl AppEnv {
 }
 
 #[derive(Debug, Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+    pub from: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadConfig {
+    pub dir: String,
+    pub max_file_size_mb: u64,
+}
+
+impl UploadConfig {
+    /// Límite de upload en bytes.
+    pub fn max_file_size_bytes(&self) -> u64 {
+        self.max_file_size_mb.saturating_mul(1024 * 1024)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OauthProviderConfig {
+    // FASE 2: los consumen los handlers de calendar/oauth.
+    #[allow(dead_code)]
+    pub client_id: Option<String>,
+    #[allow(dead_code)]
+    pub client_secret: Option<String>,
+}
+
+impl OauthProviderConfig {
+    fn from_env(prefix: &str) -> Self {
+        Self {
+            client_id: std::env::var(format!("{prefix}_CLIENT_ID"))
+                .ok()
+                .filter(|s| !s.is_empty()),
+            client_secret: std::env::var(format!("{prefix}_SECRET"))
+                .ok()
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// true si el provider está configurado (id + secret presentes).
+    /// FASE 2: lo usan los handlers de calendar/oauth.
+    #[allow(dead_code)]
+    pub fn configured(&self) -> bool {
+        self.client_id.is_some() && self.client_secret.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OauthConfig {
+    // FASE 2: los consumen los handlers de calendar/oauth.
+    #[allow(dead_code)]
+    pub google: OauthProviderConfig,
+    #[allow(dead_code)]
+    pub microsoft: OauthProviderConfig,
+    #[allow(dead_code)]
+    pub github: OauthProviderConfig,
+}
+
+impl OauthConfig {
+    fn from_env() -> Self {
+        Self {
+            google: OauthProviderConfig::from_env("OAUTH_GOOGLE"),
+            microsoft: OauthProviderConfig::from_env("OAUTH_MICROSOFT"),
+            github: OauthProviderConfig::from_env("OAUTH_GITHUB"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub env: AppEnv,
     pub host: String,
@@ -51,6 +127,15 @@ pub struct Config {
     /// true solo si hay UN proxy de confianza delante (Caddy). Afecta a la
     /// extracción de IP cliente para rate-limit. Por defecto false (seguro).
     pub trusted_proxy: bool,
+    pub smtp: SmtpConfig,
+    pub upload: UploadConfig,
+    pub oauth: OauthConfig,
+    /// Clave de 32 bytes para cifrar tokens OAuth (AES-256-GCM).
+    /// `None` solo en dev (con warn); en prod el arranque falla si falta.
+    /// NUNCA se loguea. FASE 2: la usan los handlers de calendar/oauth.
+    #[allow(dead_code)]
+    pub token_encryption_key: Option<[u8; 32]>,
+    pub backend_url: String,
 }
 
 fn required(name: &str) -> String {
@@ -74,6 +159,41 @@ fn parse_i64(name: &str, default: i64) -> i64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn parse_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn parse_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(default)
+}
+
+/// Decodifica `TOKEN_ENCRYPTION_KEY` (base64, 32 bytes exactos).
+/// Fail-fast si el valor existe pero es inválido. `None` si no está definida
+/// (el llamador decide: warn en dev, panic en prod).
+fn parse_token_encryption_key() -> Option<[u8; 32]> {
+    let raw = std::env::var("TOKEN_ENCRYPTION_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .unwrap_or_else(|_| panic!("TOKEN_ENCRYPTION_KEY no es base64 válido"));
+    if bytes.len() != 32 {
+        panic!(
+            "TOKEN_ENCRYPTION_KEY debe decodificar a 32 bytes (tiene {}). Genera con: openssl rand -base64 32",
+            bytes.len()
+        );
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Some(key)
 }
 
 impl Config {
@@ -133,6 +253,52 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
 
+        // ── SMTP (email) ──
+        let smtp = SmtpConfig {
+            host: optional("SMTP_HOST", ""),
+            port: parse_u16("SMTP_PORT", 587),
+            user: optional("SMTP_USER", ""),
+            password: optional("SMTP_PASSWORD", ""),
+            from: optional("SMTP_FROM", ""),
+            enabled: parse_bool("EMAIL_ENABLED", false),
+        };
+        if smtp.enabled && (smtp.host.is_empty() || smtp.from.is_empty()) {
+            if env.is_prod() {
+                panic!("EMAIL_ENABLED=true pero SMTP_HOST/SMTP_FROM incompletos");
+            }
+            tracing::warn!(
+                "EMAIL_ENABLED=true pero SMTP_HOST/SMTP_FROM incompletos; los envíos fallarán"
+            );
+        }
+
+        // ── Uploads (documentos) ──
+        // Default /tmp/uploads: el contenedor corre con FS de solo lectura y
+        // solo /tmp es escribible (tmpfs). En prod, montar un volumen y
+        // fijar UPLOAD_DIR a su path.
+        let upload = UploadConfig {
+            dir: optional("UPLOAD_DIR", "/tmp/uploads"),
+            max_file_size_mb: parse_u64("MAX_FILE_SIZE_MB", 10),
+        };
+        if upload.max_file_size_mb == 0 {
+            panic!("MAX_FILE_SIZE_MB debe ser > 0");
+        }
+
+        // ── OAuth providers (client_id/secret opcionales) ──
+        let oauth = OauthConfig::from_env();
+
+        // ── Clave de cifrado de tokens: None en dev con warn, panic en prod ──
+        let token_encryption_key = parse_token_encryption_key();
+        if token_encryption_key.is_none() {
+            if env.is_prod() {
+                panic!(
+                    "TOKEN_ENCRYPTION_KEY es obligatoria en prod (base64 de 32 bytes). Genera con: openssl rand -base64 32"
+                );
+            }
+            tracing::warn!(
+                "TOKEN_ENCRYPTION_KEY ausente: el cifrado de tokens OAuth está deshabilitado en dev"
+            );
+        }
+
         Self {
             env,
             host: optional("SERVER_HOST", "0.0.0.0"),
@@ -154,6 +320,11 @@ impl Config {
             trusted_proxy: std::env::var("TRUSTED_PROXY")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
+            smtp,
+            upload,
+            oauth,
+            token_encryption_key,
+            backend_url: optional("BACKEND_URL", "http://localhost:8000"),
         }
     }
 
@@ -200,6 +371,21 @@ mod tests {
             body_limit_bytes: 1024 * 1024,
             rate_limit_per_minute: 120,
             trusted_proxy: true,
+            smtp: SmtpConfig {
+                host: String::new(),
+                port: 587,
+                user: String::new(),
+                password: String::new(),
+                from: String::new(),
+                enabled: false,
+            },
+            upload: UploadConfig {
+                dir: "./uploads".into(),
+                max_file_size_mb: 10,
+            },
+            oauth: OauthConfig::default(),
+            token_encryption_key: None,
+            backend_url: "http://localhost:8000".into(),
         };
         let r = cfg.database_url_redacted();
         assert!(!r.contains("super-secreto"), "fuga de password: {r}");

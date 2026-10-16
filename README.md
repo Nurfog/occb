@@ -1,5 +1,7 @@
 # OCCB · Backend
 
+![CI](https://github.com/Nurfog/occb/actions/workflows/ci.yml/badge.svg)
+
 API del proyecto OCCB. **Este repositorio contiene SOLO el backend** (Rust + Axum + SQLx).
 
 | Proyecto | Contenido | Dónde |

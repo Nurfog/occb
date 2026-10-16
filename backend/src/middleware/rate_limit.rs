@@ -65,23 +65,15 @@ impl RateLimiter {
 }
 
 fn client_ip(req: &Request, trusted_proxy: bool) -> IpAddr {
-    if trusted_proxy {
-        if let Some(xff) = req
+    if trusted_proxy
+        && let Some(xff) = req
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-        {
-            if let Some(last) = xff
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .next_back()
-            {
-                if let Ok(ip) = last.parse::<IpAddr>() {
-                    return ip;
-                }
-            }
-        }
+        && let Some(last) = xff.split(',').map(str::trim).rfind(|s| !s.is_empty())
+        && let Ok(ip) = last.parse::<IpAddr>()
+    {
+        return ip;
     }
     // `into_make_service_with_connect_info::<SocketAddr>()` lo inserta.
     req.extensions()

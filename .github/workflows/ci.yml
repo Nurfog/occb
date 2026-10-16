@@ -1,0 +1,126 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.98"
+
+jobs:
+  backend:
+    name: Backend (fmt, clippy, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "backend -> target"
+      - name: Format check
+        run: cargo fmt -- --check
+      - name: Clippy
+        # -D warnings en todo salvo dead_code: quedan restos del port inicial
+        # (shims de compat) pendientes de eliminar; correctness/suspicious/
+        # style siguen estrictos.
+        run: cargo clippy --locked --all-targets -- -D warnings -A dead-code
+      - name: Tests
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked
+
+  migrations:
+    name: Migraciones (aplican limpio en PG18+pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: occb_app
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: occb_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: occb_app
+      PGPASSWORD: test-only-password
+      PGDATABASE: occb_db
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instala cliente psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+      - name: Aplica migraciones en orden (falla con el primer error)
+        run: |
+          for f in backend/migrations/*.sql; do
+            echo "== $f"
+            psql -v ON_ERROR_STOP=1 --single-transaction -f "$f"
+          done
+      - name: Re-aplica (idempotencia)
+        run: |
+          for f in backend/migrations/*.sql; do
+            psql -v ON_ERROR_STOP=1 --single-transaction -f "$f" > /dev/null
+          done
+          echo "migraciones idempotentes OK"
+
+  compose:
+    name: Compose (los 4 ficheros validan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Env de ejemplo (sin secretos reales)
+        run: |
+          cp .env.dev.example .env.dev
+          cp .env.prod.example .env.prod
+      - name: Valida compose
+        run: |
+          docker compose -f docker-compose.dev.yml --env-file .env.dev config -q && echo "backend OK"
+          docker compose -f docker-compose.db.yml --env-file .env.dev config -q && echo "db OK"
+          docker compose -f docker-compose.caddy.yml --env-file .env.dev config -q && echo "caddy OK"
+          docker compose -f docker-compose.prod.yml --env-file .env.prod config -q && echo "prod OK"
+
+  docker:
+    name: Imagen backend (Dockerfile multi-stage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build imagen
+        run: docker build -f backend/Dockerfile -t occb-backend:ci backend
+
+  audit:
+    name: Auditoría de dependencias (no bloqueante)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "backend -> target"
+      - name: cargo-audit
+        run: cargo install cargo-audit && cargo audit || true
