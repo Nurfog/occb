@@ -38,9 +38,9 @@ use crate::{
     models::{
         escape_like,
         privacy::{
-            ACCIONES_VALIDAS, CreatePrivacyRequest, ESTADOS_VALIDOS, PrivacyQuery, PrivacyRequest,
-            PrivacyRequestListItem, RECTIFICACION_WHITELIST, TIPOS_VALIDOS, UpdatePrivacyRequest,
-            VerifyPrivacyRequest,
+            ACCIONES_VALIDAS, ConsentRecord, CreatePrivacyRequest, ESTADOS_VALIDOS, PrivacyQuery,
+            PrivacyRequest, PrivacyRequestListItem, RECTIFICACION_WHITELIST, RecordConsentInput,
+            TIPOS_VALIDOS, UpdatePrivacyRequest, VerifyPrivacyRequest,
         },
     },
     services::email::{EmailMessage, send_via_smtp},
@@ -1281,6 +1281,69 @@ async fn resumen_acceso(
     }))
 }
 
+// ─── 8. Consentimientos (protegido; registro probatorio Ley 21.719) ────────
+
+/// POST: registra la decisión de finalidades opcionales del dueño del token.
+/// Cada llamada crea una fila (historial); la vigente es la última.
+pub async fn record_consent(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(input): Json<RecordConsentInput>,
+) -> Result<impl IntoResponse, AppError> {
+    input.validate()?;
+    let source = input
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("app");
+    let rec: (Uuid, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO privacy_consents (user_id, marketing, analytics, version, source) \
+          VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
+    )
+    .bind(claims.sub)
+    .bind(input.marketing)
+    .bind(input.analytics)
+    .bind(input.version)
+    .bind(source)
+    .fetch_one(&state.db)
+    .await?;
+    let _ = insert_audit_log(
+        &state.db,
+        Some(claims.sub),
+        "consent",
+        "privacy_consent",
+        rec.0,
+        None,
+        Some(json!({
+            "marketing": input.marketing,
+            "analytics": input.analytics,
+            "version": input.version,
+            "source": source,
+        })),
+    )
+    .await;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "id": rec.0, "recorded_at": rec.1 })),
+    ))
+}
+
+/// GET: última decisión registrada del dueño del token (404 si nunca decidió).
+pub async fn latest_consent(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<impl IntoResponse, AppError> {
+    let rec: Option<ConsentRecord> = sqlx::query_as::<_, ConsentRecord>(
+        "SELECT id, user_id, marketing, analytics, version, source, created_at \
+          FROM privacy_consents WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(claims.sub)
+    .fetch_optional(&state.db)
+    .await?;
+    rec.map(Json).ok_or(AppError::NotFound)
+}
+
 // ─── Tests (puros, sin DB) ──────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1382,5 +1445,50 @@ mod tests {
         // `con_bloqueo` es metadata y se ignora.
         let meta = json!({ "first_name": "Ana", "con_bloqueo": true });
         assert_eq!(extraer_corrections(&meta).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn consentimiento_version_y_origen_acotados() {
+        use crate::models::privacy::RecordConsentInput;
+        use validator::Validate;
+        let base = || RecordConsentInput {
+            marketing: true,
+            analytics: false,
+            version: 1,
+            source: Some("banner".into()),
+        };
+        assert!(base().validate().is_ok());
+        assert!(
+            RecordConsentInput {
+                version: 0,
+                ..base()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RecordConsentInput {
+                version: 100,
+                ..base()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RecordConsentInput {
+                source: Some("x".repeat(21)),
+                ..base()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RecordConsentInput {
+                source: None,
+                ..base()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }

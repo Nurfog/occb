@@ -273,3 +273,29 @@ pub struct UpdatePrivacyRequest {
     #[validate(length(max = 2000, message = "legal_hold max 2000 caracteres"))]
     pub legal_hold: Option<String>,
 }
+
+/// Decisión de consentimiento (finalidades opcionales, opt-in).
+/// Cada POST crea una fila: el historial es la evidencia (la vigente es la
+/// última por `created_at`; revocar = registrar todo-falso).
+#[derive(Debug, Deserialize, Validate)]
+pub struct RecordConsentInput {
+    pub marketing: bool,
+    pub analytics: bool,
+    #[validate(range(min = 1, max = 99))]
+    pub version: i32,
+    /// Origen de la decisión (`banner`, `registro`, `preferencias`).
+    #[validate(length(min = 1, max = 20))]
+    pub source: Option<String>,
+}
+
+/// Fila de `privacy_consents` para el frontend (`GET latest`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ConsentRecord {
+    pub id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub marketing: bool,
+    pub analytics: bool,
+    pub version: i32,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+}

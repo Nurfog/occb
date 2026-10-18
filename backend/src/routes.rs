@@ -236,6 +236,15 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/privacy/requests/{id}",
             get(handlers::privacy::get_request).patch(handlers::privacy::update_request),
         )
+        // Registro probatorio de consentimientos (opt-in Ley 21.719)
+        .route(
+            "/api/v1/privacy/consents",
+            post(handlers::privacy::record_consent),
+        )
+        .route(
+            "/api/v1/privacy/consents/latest",
+            get(handlers::privacy::latest_consent),
+        )
         // Profile (contrato origen)
         .route("/api/v1/auth/me", get(handlers::auth_ext::get_profile))
         .route(
