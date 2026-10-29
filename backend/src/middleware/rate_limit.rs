@@ -65,21 +65,21 @@ impl RateLimiter {
 }
 
 fn client_ip(req: &Request, trusted_proxy: bool) -> IpAddr {
-    if trusted_proxy {
-        if let Some(xff) = req
+    if trusted_proxy
+        && let Some(xff) = req
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-        {
-            if let Some(last) = xff
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .next_back()
-            {
-                if let Ok(ip) = last.parse::<IpAddr>() {
-                    return ip;
-                }
+    {
+        // rsplit: empieza por el final (el salto añadido por Caddy) y
+        // se detiene en la primera IP válida (no falsificable).
+        for part in xff.rsplit(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if let Ok(ip) = part.parse::<IpAddr>() {
+                return ip;
             }
         }
     }

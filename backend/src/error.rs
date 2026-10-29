@@ -4,9 +4,9 @@
 //! - 5xx / sqlx: mensaje genérico; el detalle va solo al log (tracing::error).
 
 use axum::{
-    http::{header, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use serde_json::json;
 
@@ -100,10 +100,10 @@ impl From<validator::ValidationErrors> for AppError {
 impl From<sqlx::Error> for AppError {
     fn from(e: sqlx::Error) -> Self {
         // Violación de unicidad -> 409, sin exponer el SQL.
-        if let sqlx::Error::Database(db) = &e {
-            if db.code().as_deref() == Some("23505") {
-                return Self::Conflict;
-            }
+        if let sqlx::Error::Database(db) = &e
+            && db.code().as_deref() == Some("23505")
+        {
+            return Self::Conflict;
         }
         tracing::error!("db error: {e}");
         Self::Internal

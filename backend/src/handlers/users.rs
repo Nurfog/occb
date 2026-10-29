@@ -5,17 +5,17 @@
 //!   escape. El `format!` SOLO interpola constantes de la lista blanca.
 
 use axum::{
+    Extension, Json,
     extract::{Path, Query, State},
     response::IntoResponse,
-    Extension, Json,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
     auth::Claims,
     error::AppError,
-    models::{escape_like, normalize_list, ListQuery, UserPublic},
+    models::{ListQuery, UserPublic, escape_like, normalize_list},
     state::AppState,
 };
 
@@ -25,7 +25,9 @@ pub async fn get_user(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let user: Option<UserPublic> = sqlx::query_as::<_, UserPublic>(
-        "SELECT id, email, name, created_at FROM users WHERE id = $1",
+        "SELECT u.id, u.email, u.name, p.name AS profile, u.created_at \
+         FROM users u JOIN profiles p ON p.id = u.profile_id \
+         WHERE u.id = $1",
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -43,10 +45,10 @@ pub async fn list_users(
     let pattern = q.q.as_deref().map(|s| format!("%{}%", escape_like(s)));
 
     let total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users
-         WHERE ($1::text IS NULL
-            OR email::text ILIKE $1 ESCAPE '\\'
-            OR name ILIKE $1 ESCAPE '\\')",
+        "SELECT COUNT(*) FROM users u \
+         WHERE ($1::text IS NULL \
+            OR u.email::text ILIKE $1 ESCAPE '\\' \
+            OR u.name ILIKE $1 ESCAPE '\\')",
     )
     .bind(pattern.as_deref())
     .fetch_one(&state.db)
@@ -54,10 +56,11 @@ pub async fn list_users(
 
     // sort_col/sort_dir son constantes de lista blanca (ver normalize_list).
     let sql = format!(
-        "SELECT id, email, name, created_at FROM users
-         WHERE ($1::text IS NULL
-            OR email::text ILIKE $1 ESCAPE '\\'
-            OR name ILIKE $1 ESCAPE '\\')
+        "SELECT u.id, u.email, u.name, p.name AS profile, u.created_at \
+         FROM users u JOIN profiles p ON p.id = u.profile_id \
+         WHERE ($1::text IS NULL \
+            OR u.email::text ILIKE $1 ESCAPE '\\' \
+            OR u.name ILIKE $1 ESCAPE '\\') \
          ORDER BY {sort_col} {sort_dir} LIMIT $2 OFFSET $3"
     );
     let users = sqlx::query_as::<_, UserPublic>(&sql)

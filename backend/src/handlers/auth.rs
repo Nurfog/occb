@@ -11,7 +11,7 @@
 //!   memoria; nunca en `localStorage` si hay XSS). Si el frontend pasa a
 //!   cookies HttpOnly, añadir CSRF double-submit.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
+use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    auth::{create_access_token, hash_refresh_token, new_refresh_token, Claims},
+    auth::{Claims, create_access_token, hash_refresh_token, new_refresh_token},
     error::AppError,
     models::{LoginInput, RefreshInput, RegisterInput, UserPublic},
     password,
@@ -41,6 +41,7 @@ struct UserRow {
     email: String,
     name: String,
     password_hash: String,
+    profile: String,
     created_at: DateTime<Utc>,
 }
 
@@ -69,6 +70,7 @@ fn pair_response(user: &UserRow, access: String, refresh: String, ttl_minutes: i
             id: user.id,
             email: user.email.clone(),
             name: user.name.clone(),
+            profile: user.profile.clone(),
             created_at: user.created_at,
         },
         access_token: access,
@@ -78,6 +80,10 @@ fn pair_response(user: &UserRow, access: String, refresh: String, ttl_minutes: i
     }
 }
 
+const USER_SELECT: &str = "SELECT u.id, u.email, u.name, u.password_hash, \
+    p.name AS profile, u.created_at \
+    FROM users u JOIN profiles p ON p.id = u.profile_id";
+
 pub async fn register(
     State(state): State<AppState>,
     Json(input): Json<RegisterInput>,
@@ -85,15 +91,23 @@ pub async fn register(
     input.validate()?;
     let email = input.email.trim().to_lowercase();
     let hash = password::hash_password(&input.password)?;
-    let user = sqlx::query_as::<_, UserRow>(
-        "INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3)
-         RETURNING id, email, name, password_hash, created_at",
+    // Bootstrap: si la tabla está vacía, este usuario es admin.
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, name, password_hash, profile_id) \
+         VALUES ($1, $2, $3, \
+           (SELECT id FROM profiles WHERE name = \
+             CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END)) \
+         RETURNING id",
     )
     .bind(&email)
     .bind(input.name.trim())
     .bind(&hash)
     .fetch_one(&state.db)
     .await?;
+    let user = sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE u.id = $1"))
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
     let (access, refresh) = issue_pair(&state, &user).await?;
     Ok((
         StatusCode::CREATED,
@@ -112,12 +126,11 @@ pub async fn login(
 ) -> Result<impl IntoResponse, AppError> {
     input.validate()?;
     let email = input.email.trim().to_lowercase();
-    let user: Option<UserRow> = sqlx::query_as::<_, UserRow>(
-        "SELECT id, email, name, password_hash, created_at FROM users WHERE email = $1",
-    )
-    .bind(&email)
-    .fetch_optional(&state.db)
-    .await?;
+    let user: Option<UserRow> =
+        sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE u.email = $1"))
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await?;
     let Some(user) = user else {
         // Mismo coste aproximado que un verify real + mismo 401: anti-enumeración.
         let _ = password::hash_password("00-mitiga-enumeracion-con-relleno-largo");
@@ -173,13 +186,11 @@ pub async fn refresh(
         return Err(AppError::Unauthorized);
     };
 
-    let user: UserRow = sqlx::query_as::<_, UserRow>(
-        "SELECT id, email, name, password_hash, created_at FROM users WHERE id = $1",
-    )
-    .bind(row.user_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|_| AppError::Internal)?;
+    let user: UserRow = sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE u.id = $1"))
+        .bind(row.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| AppError::Internal)?;
 
     // Rotación: revoca el usado y crea el nuevo en la misma transacción.
     sqlx::query("UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1")
@@ -224,7 +235,9 @@ pub async fn me(
     Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse, AppError> {
     let user: Option<UserPublic> = sqlx::query_as::<_, UserPublic>(
-        "SELECT id, email, name, created_at FROM users WHERE id = $1",
+        "SELECT u.id, u.email, u.name, p.name AS profile, u.created_at \
+         FROM users u JOIN profiles p ON p.id = u.profile_id \
+         WHERE u.id = $1",
     )
     .bind(claims.sub)
     .fetch_optional(&state.db)

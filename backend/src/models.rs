@@ -40,6 +40,7 @@ pub struct UserPublic {
     pub id: Uuid,
     pub email: String,
     pub name: String,
+    pub profile: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -57,10 +58,11 @@ pub fn normalize_list(q: &ListQuery) -> (i64, i64, &'static str, &'static str) {
     let page = q.page.unwrap_or(1).clamp(1, 10_000) as i64;
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100) as i64;
     let sort: &'static str = match q.sort.as_deref().unwrap_or("created_at") {
-        "email" => "email",
-        "name" => "name",
-        "created_at" => "created_at",
-        _ => "created_at",
+        // Cualificados con u. (profiles también tiene columna name).
+        "email" => "u.email",
+        "name" => "u.name",
+        "created_at" => "u.created_at",
+        _ => "u.created_at",
     };
     let dir: &'static str = match q.dir.as_deref().unwrap_or("desc") {
         "asc" => "ASC",
@@ -96,7 +98,7 @@ mod tests {
         };
         let (page, per_page, sort, dir) = normalize_list(&q);
         assert_eq!((page, per_page), (1, 100));
-        assert_eq!(sort, "created_at"); // inyección de columna neutralizada
+        assert_eq!(sort, "u.created_at"); // inyección de columna neutralizada
         assert_eq!(dir, "DESC");
     }
 

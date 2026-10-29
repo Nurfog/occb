@@ -1,0 +1,11 @@
+[Unit]
+Description=OCCB Postgres backup diario (prod)
+
+[Timer]
+OnCalendar=daily
+OnCalendar=03:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

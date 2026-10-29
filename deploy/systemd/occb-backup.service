@@ -1,0 +1,13 @@
+[Unit]
+Description=OCCB Postgres backup (prod)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Usuario con acceso a docker (grupo docker). Ajusta la ruta si el repo
+# no está en /opt/occb.
+User=occb
+WorkingDirectory=/opt/occb
+Environment=BACKUP_DIR=/var/backups/occb
+ExecStart=/opt/occb/scripts/backup-db.sh prod

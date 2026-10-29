@@ -111,6 +111,21 @@ Sin Docker: `cd backend && DATABASE_URL=... cargo run` (lee `../.env.dev`).
 - CORS cerrado a `CORS_ORIGINS`. Preflight permitido solo desde esos orígenes.
 - Respuestas de error: `{ "error": { "code": "...", "message": "..." } }`.
 
+### Backups programados (prod)
+
+En el servidor prod (repo en `/opt/occb`, usuario `occb` en grupo `docker`):
+
+```bash
+sudo cp deploy/systemd/occb-backup.* /etc/systemd/system/
+sudo mkdir -p /var/backups/occb && sudo chown occb:docker /var/backups/occb
+sudo systemctl daemon-reload
+sudo systemctl enable --now occb-backup.timer
+systemctl list-timers occb-backup.timer
+```
+
+Alternativa con cron: `0 3 * * * /opt/occb/scripts/backup-db.sh prod`.
+Los backups quedan en `/var/backups/occb` (o `BACKUP_DIR`), retención de 7.
+
 ## Endpoints
 
 | Método | Ruta | Auth | Descripción |
@@ -122,9 +137,14 @@ Sin Docker: `cd backend && DATABASE_URL=... cargo run` (lee `../.env.dev`).
 | POST | `/api/v1/auth/login` | no | 401 genérico (anti-enumeración) |
 | POST | `/api/v1/auth/refresh` | no | rotación; reuso → 401 + alerta en log |
 | POST | `/api/v1/auth/logout` | sí | revoca refresh |
-| GET | `/api/v1/auth/me` | sí | perfil |
-| GET | `/api/v1/users?q=&page=&per_page=&sort=&dir=` | sí | listado paginado |
-| GET | `/api/v1/users/{id}` | sí | detalle (UUID estricto) |
+| GET | `/api/v1/auth/me` | sí | perfil (incluye `profile`) |
+| GET | `/api/v1/users?q=&page=&per_page=&sort=&dir=` | `users.read` | listado paginado |
+| GET | `/api/v1/users/{id}` | `users.read` | detalle (UUID estricto) |
+| GET | `/api/v1/admin/ping` | `admin.access` | verificación RBAC |
+
+RBAC: perfiles `admin` (`admin.access`, lo permite todo) y `user`
+(`users.read`, `users.list`). El primer usuario registrado es admin
+(bootstrap); el resto user. Sin permiso → 403 + warn en log.
 
 ## Modelo de seguridad
 
@@ -202,6 +222,6 @@ CADDY_HTTP_PORT=8080 CADDY_HTTPS_PORT=8443 make dev
 
 `cargo test`: JWT roundtrip + rechazo, refresh aleatorio/hash, Argon2 +
 política, paginación/lista blanca, `escape_like`, redacción de URL,
-parseo de `REDIS_URL`. Verificado además end-to-end contra
+parseo de `REDIS_URL`, RBAC (`permitted`). Verificado además end-to-end contra
 `pgvector/pgvector:pg18` (registro, login, refresh+reuso, logout,
 SQLi en UUID/sort/LIKE, CORS, `alg:none`, body 413, rate-limit, 409/422).

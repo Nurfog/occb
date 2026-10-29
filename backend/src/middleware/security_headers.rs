@@ -5,8 +5,8 @@
 //! - CSP restrictiva: es un API JSON, nada que ejecutar ni enmarcar.
 
 use axum::{
-    http::{header, HeaderName, HeaderValue},
     Router,
+    http::{HeaderName, HeaderValue, header},
 };
 use tower_http::set_header::SetResponseHeaderLayer;
 

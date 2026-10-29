@@ -4,8 +4,8 @@
 //! - `verify_password` es tiempo-constante (lo garantiza argon2).
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
 use crate::error::AppError;

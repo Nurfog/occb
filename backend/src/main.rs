@@ -16,7 +16,7 @@ mod state;
 
 use std::{net::SocketAddr, time::Duration};
 
-use axum::http::{header, HeaderName, Method, StatusCode};
+use axum::http::{HeaderName, Method, StatusCode, header};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -24,7 +24,7 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{config::AppEnv, middleware::rate_limit::RateLimiter};
 
