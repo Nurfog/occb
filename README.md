@@ -113,6 +113,21 @@ Sin Docker: `cd backend && DATABASE_URL=... cargo run` (lee `../.env.dev`).
 - CORS cerrado a `CORS_ORIGINS`. Preflight permitido solo desde esos orígenes.
 - Respuestas de error: `{ "error": { "code": "...", "message": "..." } }`.
 
+### Backups programados (prod)
+
+En el servidor prod (repo en `/opt/occb`, usuario `occb` en grupo `docker`):
+
+```bash
+sudo cp deploy/systemd/occb-backup.* /etc/systemd/system/
+sudo mkdir -p /var/backups/occb && sudo chown occb:docker /var/backups/occb
+sudo systemctl daemon-reload
+sudo systemctl enable --now occb-backup.timer
+systemctl list-timers occb-backup.timer
+```
+
+Alternativa con cron: `0 3 * * * /opt/occb/scripts/backup-db.sh prod`.
+Los backups quedan en `/var/backups/occb` (o `BACKUP_DIR`), retención de 7.
+
 ## Endpoints
 
 | Método | Ruta | Auth | Descripción |

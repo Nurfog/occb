@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Backup de Postgres (contenedor occb-db-<modo>) en formato custom + gzip.
 # Uso: ./scripts/backup-db.sh [dev|prod]
-# Guarda en ./backups y conserva las últimas 7 copias. Sin pg_dump en el host.
+# Guarda en ./backups (o $BACKUP_DIR) y conserva las últimas 7 copias.
+# Sin pg_dump en el host: usa el cliente dentro del contenedor.
 set -euo pipefail
 
 MODE="${1:-dev}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT/.env.$MODE"
 DB_CONTAINER="occb-db-$MODE"
-DB_COMPOSE="$ROOT/docker-compose.db.yml"
 BACKUP_DIR="${BACKUP_DIR:-$ROOT/backups}"
 
 [[ -f "$ENV_FILE" ]] || { echo "No existe $ENV_FILE"; exit 1; }
@@ -24,8 +24,13 @@ fi
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="$BACKUP_DIR/occb_${MODE}_${TS}.dump.gz"
 
-docker compose -f "$DB_COMPOSE" --env-file "$ENV_FILE" exec -T db \
-  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc | gzip > "$OUT"
+if [[ "$MODE" == "dev" ]]; then
+  docker compose -f "$ROOT/docker-compose.db.yml" --env-file "$ENV_FILE" exec -T db \
+    pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc | gzip > "$OUT"
+else
+  docker exec "$DB_CONTAINER" \
+    pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc | gzip > "$OUT"
+fi
 chmod 600 "$OUT"
 
 # Retención: últimas 7.
