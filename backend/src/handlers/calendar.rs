@@ -266,7 +266,9 @@ pub async fn list_events(
     perms
         .require("calendar.view")
         .map_err(|_| AppError::Forbidden)?;
-    let user_id = claims.sub;
+    // calendar_events no tiene tenant_id (cuelga de user_id): el alcance es
+    // por empresa vía sus usuarios. Platform (scope None) ve todo.
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let start = params
         .start
         .unwrap_or_else(|| Utc::now() - chrono::Duration::days(30));
@@ -277,22 +279,22 @@ pub async fn list_events(
     let events = if let Some(ref provider) = params.provider {
         sqlx::query_as::<_, CalendarEvent>(
             "SELECT id, user_id, provider, external_id, title, description, location, start_time, end_time, all_day, attendees, entity_type, entity_id, created_at, updated_at
-             FROM calendar_events WHERE user_id = $1 AND start_time >= $2 AND end_time <= $3 AND provider = $4 ORDER BY start_time",
+             FROM calendar_events WHERE start_time >= $1 AND end_time <= $2 AND provider = $3 AND ($4::uuid IS NULL OR user_id IN (SELECT id FROM users WHERE tenant_id = $4)) ORDER BY start_time",
         )
-        .bind(user_id)
         .bind(start)
         .bind(end)
         .bind(provider)
+        .bind(scope)
         .fetch_all(&state.db)
         .await?
     } else {
         sqlx::query_as::<_, CalendarEvent>(
             "SELECT id, user_id, provider, external_id, title, description, location, start_time, end_time, all_day, attendees, entity_type, entity_id, created_at, updated_at
-             FROM calendar_events WHERE user_id = $1 AND start_time >= $2 AND end_time <= $3 ORDER BY start_time",
+             FROM calendar_events WHERE start_time >= $1 AND end_time <= $2 AND ($3::uuid IS NULL OR user_id IN (SELECT id FROM users WHERE tenant_id = $3)) ORDER BY start_time",
         )
-        .bind(user_id)
         .bind(start)
         .bind(end)
+        .bind(scope)
         .fetch_all(&state.db)
         .await?
     };
@@ -350,6 +352,7 @@ pub async fn update_event(
     perms
         .require("calendar.edit")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let event = sqlx::query_as::<_, CalendarEvent>(
         "UPDATE calendar_events SET
             title = COALESCE($3, title),
@@ -360,7 +363,7 @@ pub async fn update_event(
             all_day = COALESCE($8, all_day),
             attendees = COALESCE($9, attendees),
             updated_at = NOW()
-         WHERE id = $1 AND user_id = $2
+         WHERE id = $1 AND user_id = $2 AND ($10::uuid IS NULL OR user_id IN (SELECT id FROM users WHERE tenant_id = $10))
          RETURNING id, user_id, provider, external_id, title, description, location, start_time, end_time, all_day, attendees, entity_type, entity_id, created_at, updated_at",
     )
     .bind(id)
@@ -372,6 +375,7 @@ pub async fn update_event(
     .bind(input.end_time)
     .bind(input.all_day)
     .bind(input.attendees.map(|a| serde_json::json!(a)))
+    .bind(scope)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -389,9 +393,11 @@ pub async fn delete_event(
     perms
         .require("calendar.delete")
         .map_err(|_| AppError::Forbidden)?;
-    let result = sqlx::query("DELETE FROM calendar_events WHERE id = $1 AND user_id = $2")
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let result = sqlx::query("DELETE FROM calendar_events WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR user_id IN (SELECT id FROM users WHERE tenant_id = $3))")
         .bind(id)
         .bind(claims.sub)
+        .bind(scope)
         .execute(&state.db)
         .await?;
 

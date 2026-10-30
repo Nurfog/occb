@@ -51,13 +51,14 @@ fn normalize_activity_type(s: &str) -> Result<&'static str, AppError> {
 
 pub async fn list_activities(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<ActivityFilter>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("activities.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let pp = PaginationParams {
         page: params.page,
         per_page: params.per_page,
@@ -96,6 +97,11 @@ pub async fn list_activities(
         query.push_str(&format!(" AND company_id = ${}", param_idx));
         param_idx += 1;
     }
+    query.push_str(&format!(
+        " AND (${}::uuid IS NULL OR tenant_id = ${})",
+        param_idx, param_idx
+    ));
+    param_idx += 1;
 
     query.push_str(&format!(
         " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
@@ -116,7 +122,7 @@ pub async fn list_activities(
     if let Some(cmid) = params.company_id {
         q = q.bind(cmid);
     }
-    q = q.bind(per_page).bind(offset);
+    q = q.bind(scope).bind(per_page).bind(offset);
 
     let activities = q.fetch_all(&state.db).await?;
 
@@ -133,10 +139,47 @@ pub async fn create_activity(
         .require("activities.create")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    if let Some(cid) = input.contact_id {
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+        )
+        .bind(cid)
+        .bind(scope)
+        .fetch_one(&state.db)
+        .await?;
+        if !visible {
+            return Err(AppError::NotFound);
+        }
+    }
+    if let Some(did) = input.deal_id {
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM deals WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+        )
+        .bind(did)
+        .bind(scope)
+        .fetch_one(&state.db)
+        .await?;
+        if !visible {
+            return Err(AppError::NotFound);
+        }
+    }
+    if let Some(cmid) = input.company_id {
+        let visible: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+        )
+        .bind(cmid)
+        .bind(scope)
+        .fetch_one(&state.db)
+        .await?;
+        if !visible {
+            return Err(AppError::NotFound);
+        }
+    }
     let activity = sqlx::query_as::<_, Activity>(
         r#"
-        INSERT INTO activities (activity_type, subject, description, contact_id, deal_id, company_id, due_date, recurrence_type, recurrence_interval, recurrence_end_date)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO activities (activity_type, subject, description, contact_id, deal_id, company_id, due_date, recurrence_type, recurrence_interval, recurrence_end_date, tenant_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id, activity_type, subject, description, contact_id, deal_id, company_id, due_date, completed, recurrence_type, recurrence_interval, recurrence_end_date, parent_activity_id, created_at, updated_at
         "#,
     )
@@ -150,6 +193,7 @@ pub async fn create_activity(
     .bind(input.recurrence_type.unwrap_or(crate::models::RecurrenceType::None))
     .bind(input.recurrence_interval.unwrap_or(1))
     .bind(input.recurrence_end_date)
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -192,7 +236,7 @@ pub async fn update_activity(
             recurrence_interval = COALESCE($11, recurrence_interval),
             recurrence_end_date = COALESCE($12, recurrence_end_date),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND ($13::uuid IS NULL OR tenant_id = $13)
         RETURNING id, activity_type, subject, description, contact_id, deal_id, company_id, due_date, completed, recurrence_type, recurrence_interval, recurrence_end_date, parent_activity_id, created_at, updated_at
         "#,
     )
@@ -208,6 +252,7 @@ pub async fn update_activity(
     .bind(input.recurrence_type)
     .bind(input.recurrence_interval)
     .bind(input.recurrence_end_date)
+    .bind(crate::auth::tenant_scope(&state, &claims.sub).await?)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -234,10 +279,14 @@ pub async fn delete_activity(
     perms
         .require("activities.delete")
         .map_err(|_| crate::error::AppError::Forbidden)?;
-    let result = sqlx::query("DELETE FROM activities WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let result = sqlx::query(
+        "DELETE FROM activities WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)",
+    )
+    .bind(id)
+    .bind(scope)
+    .execute(&state.db)
+    .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
@@ -269,11 +318,12 @@ pub async fn complete_activity(
         r#"
         UPDATE activities
         SET completed = true, updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)
         RETURNING id, activity_type, subject, description, contact_id, deal_id, company_id, due_date, completed, recurrence_type, recurrence_interval, recurrence_end_date, parent_activity_id, created_at, updated_at
         "#,
     )
     .bind(id)
+    .bind(crate::auth::tenant_scope(&state, &claims.sub).await?)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;

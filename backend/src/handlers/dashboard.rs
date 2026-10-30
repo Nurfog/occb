@@ -70,12 +70,13 @@ pub struct RecentActivitiesResponse {
 
 pub async fn get_dashboard_stats(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("dashboard.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     #[derive(sqlx::FromRow)]
     struct StatsRow {
         total_contacts: i64,
@@ -90,15 +91,16 @@ pub async fn get_dashboard_stats(
     let row = sqlx::query_as::<_, StatsRow>(
         r#"
         SELECT
-            (SELECT COUNT(*)::bigint FROM contacts) AS total_contacts,
-            (SELECT COUNT(*)::bigint FROM companies) AS total_companies,
-            (SELECT COUNT(*)::bigint FROM deals) AS total_deals,
-            (SELECT COALESCE(SUM(value)::float8, 0.0) FROM deals) AS total_revenue,
-            (SELECT COUNT(*)::bigint FROM deals WHERE stage NOT IN ('closed_won', 'closed_lost')) AS active_deals,
-            (SELECT COUNT(*)::bigint FROM deals WHERE stage = 'closed_won') AS won_deals,
-            (SELECT COUNT(*)::bigint FROM deals WHERE stage = 'closed_lost') AS lost_deals
+            (SELECT COUNT(*)::bigint FROM contacts WHERE ($1::uuid IS NULL OR tenant_id = $1)) AS total_contacts,
+            (SELECT COUNT(*)::bigint FROM companies WHERE ($1::uuid IS NULL OR tenant_id = $1)) AS total_companies,
+            (SELECT COUNT(*)::bigint FROM deals WHERE ($1::uuid IS NULL OR tenant_id = $1)) AS total_deals,
+            (SELECT COALESCE(SUM(value)::float8, 0.0) FROM deals WHERE ($1::uuid IS NULL OR tenant_id = $1)) AS total_revenue,
+            (SELECT COUNT(*)::bigint FROM deals WHERE stage NOT IN ('closed_won', 'closed_lost') AND ($1::uuid IS NULL OR tenant_id = $1)) AS active_deals,
+            (SELECT COUNT(*)::bigint FROM deals WHERE stage = 'closed_won' AND ($1::uuid IS NULL OR tenant_id = $1)) AS won_deals,
+            (SELECT COUNT(*)::bigint FROM deals WHERE stage = 'closed_lost' AND ($1::uuid IS NULL OR tenant_id = $1)) AS lost_deals
         "#,
     )
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -115,12 +117,13 @@ pub async fn get_dashboard_stats(
 
 pub async fn get_pipeline(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("dashboard.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     #[derive(sqlx::FromRow)]
     struct StageRow {
         stage: String,
@@ -132,6 +135,7 @@ pub async fn get_pipeline(
         r#"
         SELECT stage::text AS stage, COUNT(*)::bigint AS count, COALESCE(SUM(value)::float8, 0.0) AS total_value
         FROM deals
+        WHERE ($1::uuid IS NULL OR tenant_id = $1)
         GROUP BY stage
         ORDER BY CASE stage
             WHEN 'lead' THEN 1
@@ -144,6 +148,7 @@ pub async fn get_pipeline(
         END
         "#,
     )
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
 
@@ -161,12 +166,13 @@ pub async fn get_pipeline(
 
 pub async fn get_top_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("dashboard.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     #[derive(sqlx::FromRow)]
     struct TopDealRow {
         id: Uuid,
@@ -183,11 +189,12 @@ pub async fn get_top_deals(
                c.name AS company_name, d.expected_close_date
         FROM deals d
         LEFT JOIN companies c ON d.company_id = c.id
-        WHERE d.stage != 'closed_lost'
+        WHERE d.stage != 'closed_lost' AND ($1::uuid IS NULL OR d.tenant_id = $1)
         ORDER BY d.value DESC
         LIMIT 5
         "#,
     )
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
 
@@ -208,12 +215,13 @@ pub async fn get_top_deals(
 
 pub async fn get_recent_activities(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("dashboard.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     #[derive(sqlx::FromRow)]
     struct ActivityRow {
         id: Uuid,
@@ -230,10 +238,12 @@ pub async fn get_recent_activities(
                a.created_at
         FROM activities a
         LEFT JOIN contacts c ON a.contact_id = c.id
+        WHERE ($1::uuid IS NULL OR a.tenant_id = $1)
         ORDER BY a.created_at DESC
         LIMIT 10
         "#,
     )
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
 

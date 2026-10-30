@@ -89,13 +89,14 @@ pub struct PaginatedLeads {
 pub async fn list_leads(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Query(params): Query<LeadQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.view")
         .map_err(|_| AppError::Forbidden)?;
     params.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let page = params.page_clamped();
     let per_page = params.per_page_clamped();
     let offset = params.offset();
@@ -116,7 +117,8 @@ pub async fn list_leads(
             OR email ILIKE $1 ESCAPE '\\' OR company_name ILIKE $1 ESCAPE '\\') \
         AND ($2::lead_status IS NULL OR status = $2::lead_status) \
         AND ($3::lead_source IS NULL OR lead_source = $3::lead_source) \
-        AND ($4::uuid IS NULL OR assigned_to = $4)";
+        AND ($4::uuid IS NULL OR assigned_to = $4) \
+        AND ($5::uuid IS NULL OR tenant_id = $5)";
     // sort_col/sort_dir son constantes de la lista blanca.
     let data_sql = format!(
         "SELECT {LEAD_COLUMNS} FROM leads \
@@ -126,7 +128,8 @@ pub async fn list_leads(
         AND ($2::lead_status IS NULL OR status = $2::lead_status) \
         AND ($3::lead_source IS NULL OR lead_source = $3::lead_source) \
         AND ($4::uuid IS NULL OR assigned_to = $4) \
-        ORDER BY {sort_col} {sort_dir} LIMIT $5 OFFSET $6"
+        AND ($5::uuid IS NULL OR tenant_id = $5) \
+        ORDER BY {sort_col} {sort_dir} LIMIT $6 OFFSET $7"
     );
 
     let total: i64 = sqlx::query_scalar(count_sql)
@@ -134,6 +137,7 @@ pub async fn list_leads(
         .bind(status.as_deref())
         .bind(source.as_deref())
         .bind(assigned)
+        .bind(scope)
         .fetch_one(&state.db)
         .await?;
 
@@ -142,6 +146,7 @@ pub async fn list_leads(
         .bind(status.as_deref())
         .bind(source.as_deref())
         .bind(assigned)
+        .bind(scope)
         .bind(per_page)
         .bind(offset)
         .fetch_all(&state.db)
@@ -164,15 +169,19 @@ pub async fn list_leads(
 pub async fn get_lead(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.view")
         .map_err(|_| AppError::Forbidden)?;
-    let sql = format!("SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     let lead = sqlx::query_as::<_, Lead>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -189,10 +198,11 @@ pub async fn create_lead(
         .require("leads.create")
         .map_err(|_| AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let lead = sqlx::query_as::<_, Lead>(
         "INSERT INTO leads (first_name, last_name, email, phone, company_name, title, \
-            industry, website, lead_source, assigned_to, notes) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::lead_source, $10, $11) \
+            industry, website, lead_source, assigned_to, notes, tenant_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::lead_source, $10, $11, $12) \
          RETURNING id, first_name, last_name, email, phone, company_name, title, industry, \
             website, lead_source, status, score, assigned_to, converted_at, \
             converted_contact_id, converted_company_id, converted_deal_id, notes, \
@@ -215,6 +225,7 @@ pub async fn create_lead(
     )
     .bind(input.assigned_to)
     .bind(input.notes.as_deref())
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -243,10 +254,14 @@ pub async fn update_lead(
         .require("leads.edit")
         .map_err(|_| AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
 
-    let existing_sql = format!("SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1");
+    let existing_sql = format!(
+        "SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     let existing = sqlx::query_as::<_, Lead>(&existing_sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -280,7 +295,7 @@ pub async fn update_lead(
             assigned_to = COALESCE($13, assigned_to), \
             notes = COALESCE($14, notes), \
             updated_at = NOW() \
-         WHERE id = $1 \
+         WHERE id = $1 AND ($15::uuid IS NULL OR tenant_id = $15) \
          RETURNING id, first_name, last_name, email, phone, company_name, title, industry, \
             website, lead_source, status, score, assigned_to, converted_at, \
             converted_contact_id, converted_company_id, converted_deal_id, notes, \
@@ -300,6 +315,7 @@ pub async fn update_lead(
     .bind(input.score)
     .bind(input.assigned_to)
     .bind(input.notes.as_deref())
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -326,10 +342,13 @@ pub async fn delete_lead(
     perms
         .require("leads.delete")
         .map_err(|_| AppError::Forbidden)?;
-    let result = sqlx::query("DELETE FROM leads WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let result =
+        sqlx::query("DELETE FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)")
+            .bind(id)
+            .bind(scope)
+            .execute(&state.db)
+            .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -357,12 +376,16 @@ pub async fn convert_lead(
         .require("leads.convert")
         .map_err(|_| AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let mut tx = state.db.begin().await?;
 
     // Bloquea la fila para evitar doble conversión concurrente.
-    let lock_sql = format!("SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1 FOR UPDATE");
+    let lock_sql = format!(
+        "SELECT {LEAD_COLUMNS} FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2) FOR UPDATE"
+    );
     let lead = sqlx::query_as::<_, Lead>(&lock_sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -398,14 +421,15 @@ pub async fn convert_lead(
     let mut company_id: Option<Uuid> = None;
     if is_company {
         let cid: Uuid = sqlx::query_scalar(
-            "INSERT INTO companies (name, industry, website, phone, email) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            "INSERT INTO companies (name, industry, website, phone, email, tenant_id) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
         )
         .bind(lead.company_name.as_deref().unwrap_or("Unknown"))
         .bind(lead.industry.as_deref())
         .bind(lead.website.as_deref())
         .bind(lead.phone.as_deref())
         .bind(lead.email.as_deref())
+        .bind(scope)
         .fetch_one(&mut *tx)
         .await?;
         company_id = Some(cid);
@@ -417,8 +441,8 @@ pub async fn convert_lead(
         .next()
         .unwrap_or(lead.last_name.as_str());
     let contact_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO contacts (first_name, last_name, email, phone, company_id, position) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        "INSERT INTO contacts (first_name, last_name, email, phone, company_id, position, tenant_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(&lead.first_name)
     .bind(last_name)
@@ -426,6 +450,7 @@ pub async fn convert_lead(
     .bind(lead.phone.as_deref())
     .bind(company_id)
     .bind(lead.title.as_deref())
+    .bind(scope)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -440,8 +465,8 @@ pub async fn convert_lead(
     // TODO: columna NUMERIC; se bindea f64 (el origen usaba Decimal).
     let deal_id: Uuid = sqlx::query_scalar(
         "INSERT INTO deals (title, value, stage, contact_id, company_id, pipeline_id, \
-            pipeline_stage_id, notes) \
-         VALUES ($1, $2, 'qualified', $3, $4, $5, $6, $7) RETURNING id",
+            pipeline_stage_id, notes, tenant_id) \
+         VALUES ($1, $2, 'qualified', $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(&deal_title)
     .bind(input.deal_value.unwrap_or(0.0))
@@ -450,6 +475,7 @@ pub async fn convert_lead(
     .bind(input.pipeline_id)
     .bind(default_stage.map(|s| s.0))
     .bind(format!("Converted from lead: {id}"))
+    .bind(scope)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -458,12 +484,14 @@ pub async fn convert_lead(
         "UPDATE leads SET status = 'converted', converted_at = NOW(), \
             converted_contact_id = $2, converted_company_id = $3, converted_deal_id = $4, \
             updated_at = NOW() \
-         WHERE id = $1 AND status = 'qualified' AND converted_at IS NULL RETURNING id",
+         WHERE id = $1 AND status = 'qualified' AND converted_at IS NULL \
+            AND ($5::uuid IS NULL OR tenant_id = $5) RETURNING id",
     )
     .bind(id)
     .bind(contact_id)
     .bind(company_id)
     .bind(deal_id)
+    .bind(scope)
     .fetch_optional(&mut *tx)
     .await?;
     if updated.is_none() {
@@ -497,12 +525,23 @@ pub async fn convert_lead(
 pub async fn list_lead_activities(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(lead_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.view")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(lead_id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let activities = sqlx::query_as::<_, LeadActivity>(
         "SELECT id, lead_id, type, subject, description, due_date, completed, created_by, \
             created_at FROM lead_activities WHERE lead_id = $1 ORDER BY created_at DESC",
@@ -524,10 +563,14 @@ pub async fn create_lead_activity(
         .require("leads.create")
         .map_err(|_| AppError::Forbidden)?;
     input.validate()?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM leads WHERE id = $1)")
-        .bind(lead_id)
-        .fetch_one(&state.db)
-        .await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(lead_id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
     if !exists {
         return Err(AppError::NotFound);
     }
@@ -551,12 +594,23 @@ pub async fn create_lead_activity(
 pub async fn complete_lead_activity(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path((lead_id, activity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.edit")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(lead_id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let result =
         sqlx::query("UPDATE lead_activities SET completed = TRUE WHERE id = $1 AND lead_id = $2")
             .bind(activity_id)
@@ -572,12 +626,23 @@ pub async fn complete_lead_activity(
 pub async fn delete_lead_activity(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path((lead_id, activity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.delete")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM leads WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(lead_id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let result = sqlx::query("DELETE FROM lead_activities WHERE id = $1 AND lead_id = $2")
         .bind(activity_id)
         .bind(lead_id)
@@ -609,11 +674,12 @@ pub struct SourceCount {
 pub async fn lead_stats(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("leads.view")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     #[derive(sqlx::FromRow)]
     struct StatsRow {
         total: i64,
@@ -629,13 +695,16 @@ pub async fn lead_stats(
             COUNT(*) FILTER (WHERE status = 'contacted') AS contacted, \
             COUNT(*) FILTER (WHERE status = 'qualified') AS qualified, \
             COUNT(*) FILTER (WHERE status = 'converted') AS converted \
-         FROM leads",
+         FROM leads WHERE ($1::uuid IS NULL OR tenant_id = $1)",
     )
+    .bind(scope)
     .fetch_one(&state.db);
     let by_source_fut = sqlx::query_as::<_, (String, i64)>(
         "SELECT lead_source::text, COUNT(*) FROM leads \
+         WHERE ($1::uuid IS NULL OR tenant_id = $1) \
          GROUP BY lead_source ORDER BY COUNT(*) DESC",
     )
+    .bind(scope)
     .fetch_all(&state.db);
 
     let (counts, by_source_rows) = tokio::join!(counts_fut, by_source_fut);

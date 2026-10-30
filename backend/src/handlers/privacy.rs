@@ -217,29 +217,38 @@ pub async fn create_request(
     // Vinculación automática por email: el solicitante normalmente solo conoce
     // su email, no el UUID interno. Sin vínculo no hay nada que ejecutar
     // (supresión/bloqueo serían no-op), así que se resuelve aquí.
-    let linked_contact: Option<Uuid> = if let Some(cid) = input.contact_id {
-        let fila: Option<Option<String>> =
-            sqlx::query_scalar("SELECT email::text FROM contacts WHERE id = $1")
-                .bind(cid)
-                .fetch_optional(&state.db)
-                .await?;
-        let Some(cemail) = fila else {
-            return Err(AppError::Validation("contacto no existe".into()));
-        };
-        if let Some(ce) = cemail
-            && ce.trim().to_lowercase() != email
-        {
-            return Err(AppError::Validation(
-                "el email no coincide con el contacto".into(),
-            ));
-        }
-        Some(cid)
-    } else {
-        sqlx::query_scalar("SELECT id FROM contacts WHERE lower(email) = lower($1) LIMIT 1")
+    // La solicitud hereda el tenant del contacto (endpoint público sin JWT:
+    // no hay `scope` del creador; sin contacto vinculado queda NULL).
+    let (linked_contact, inherited_tenant): (Option<Uuid>, Option<Uuid>) =
+        if let Some(cid) = input.contact_id {
+            let fila: Option<(Option<String>, Option<Uuid>)> =
+                sqlx::query_as("SELECT email::text, tenant_id FROM contacts WHERE id = $1")
+                    .bind(cid)
+                    .fetch_optional(&state.db)
+                    .await?;
+            let Some((cemail, ctenant)) = fila else {
+                return Err(AppError::Validation("contacto no existe".into()));
+            };
+            if let Some(ce) = cemail
+                && ce.trim().to_lowercase() != email
+            {
+                return Err(AppError::Validation(
+                    "el email no coincide con el contacto".into(),
+                ));
+            }
+            (Some(cid), ctenant)
+        } else {
+            let fila: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
+                "SELECT id, tenant_id FROM contacts WHERE lower(email) = lower($1) LIMIT 1",
+            )
             .bind(&email)
             .fetch_optional(&state.db)
-            .await?
-    };
+            .await?;
+            match fila {
+                Some((id, t)) => (Some(id), t),
+                None => (None, None),
+            }
+        };
 
     let now = Utc::now();
     let due_at = calcular_due_at(&tipo, now);
@@ -255,9 +264,9 @@ pub async fn create_request(
     let fila: (Uuid, DateTime<Utc>) = sqlx::query_as(
         "INSERT INTO privacy_requests (contact_id, email, type, status, motivo, \
             verify_token_hash, verify_expires_at, due_at, corrections, \
-            solicitante_nombre, relacion, documento_ref) \
+            solicitante_nombre, relacion, documento_ref, tenant_id) \
          VALUES ($1, $2, $3::privacy_request_type, 'recibida'::privacy_request_status, \
-            $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, due_at",
+            $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id, due_at",
     )
     .bind(linked_contact)
     .bind(&email)
@@ -282,6 +291,7 @@ pub async fn create_request(
             .map(str::trim)
             .filter(|s| !s.is_empty()),
     )
+    .bind(inherited_tenant)
     .fetch_one(&state.db)
     .await?;
     let (id, due_at_db) = fila;
@@ -391,7 +401,7 @@ pub async fn verify_request(
 /// GET staff: paginado con sort de lista blanca y `overdue` calculado en SQL.
 pub async fn list_requests(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PrivacyQuery>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -399,6 +409,7 @@ pub async fn list_requests(
         .require("privacy.view")
         .map_err(|_| AppError::Forbidden)?;
     params.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let page = params.page_clamped();
     let per_page = params.per_page_clamped();
     let offset = params.offset();
@@ -447,7 +458,8 @@ pub async fn list_requests(
            AND ($2::privacy_request_type IS NULL OR type = $2::privacy_request_type) \
            AND ($3::text IS NULL OR email::text ILIKE $3 ESCAPE '\\') \
            AND ($4::text IS NULL OR email::text ILIKE $4 ESCAPE '\\') \
-           AND ($5::bool IS NULL OR ({overdue_sql} = $5))"
+           AND ($5::bool IS NULL OR ({overdue_sql} = $5)) \
+           AND ($6::uuid IS NULL OR tenant_id = $6)"
     );
     let data_sql = format!(
         "SELECT id, contact_id, email::text AS email, type, status, motivo, \
@@ -458,6 +470,7 @@ pub async fn list_requests(
            AND ($3::text IS NULL OR email::text ILIKE $3 ESCAPE '\\') \
            AND ($4::text IS NULL OR email::text ILIKE $4 ESCAPE '\\') \
            AND ($5::bool IS NULL OR ({overdue_sql} = $5)) \
+           AND ($8::uuid IS NULL OR tenant_id = $8) \
          ORDER BY {sort_col} {sort_dir} LIMIT $6 OFFSET $7"
     );
 
@@ -467,6 +480,7 @@ pub async fn list_requests(
         .bind(pat_email.as_deref())
         .bind(pat_q.as_deref())
         .bind(params.overdue)
+        .bind(scope)
         .fetch_one(&state.db)
         .await?;
     let items = sqlx::query_as::<_, PrivacyRequestListItem>(&data_sql)
@@ -477,6 +491,7 @@ pub async fn list_requests(
         .bind(params.overdue)
         .bind(per_page)
         .bind(offset)
+        .bind(scope)
         .fetch_all(&state.db)
         .await?;
 
@@ -490,16 +505,20 @@ pub async fn list_requests(
 /// GET staff: 404 si no existe. El hash del token nunca sale al cliente.
 pub async fn get_request(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("privacy.view")
         .map_err(|_| AppError::Forbidden)?;
-    let sql = format!("SELECT {PRIVACY_COLUMNS} FROM privacy_requests WHERE id = $1");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {PRIVACY_COLUMNS} FROM privacy_requests WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     let req = sqlx::query_as::<_, PrivacyRequest>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -529,9 +548,13 @@ pub async fn update_request(
     }
 
     let mut tx = state.db.begin().await?;
-    let sql = format!("SELECT {PRIVACY_COLUMNS} FROM privacy_requests WHERE id = $1 FOR UPDATE");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {PRIVACY_COLUMNS} FROM privacy_requests WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2) FOR UPDATE"
+    );
     let req = sqlx::query_as::<_, PrivacyRequest>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -651,6 +674,20 @@ pub async fn update_request(
             Ok(Json(json!({ "id": id, "status": de, "due_at": nueva })))
         }
         "resolver-cumplida" => {
+            // La ejecución opera sobre el contacto vinculado: debe ser
+            // visible para el tenant del staff (no visible -> 404).
+            if let Some(cid) = req.contact_id {
+                let visible: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+                )
+                .bind(cid)
+                .bind(scope)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !visible {
+                    return Err(AppError::NotFound);
+                }
+            }
             let (resolution_final, bundle): (String, Option<Value>) = match tipo.as_str() {
                 "supresion" => {
                     let sugerida =
@@ -905,16 +942,19 @@ pub async fn update_request(
 /// GET staff: conteo por estado + vencidas. `plazo_dias` fijo en 30.
 pub async fn request_stats(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("privacy.view")
         .map_err(|_| AppError::Forbidden)?;
-    let filas: Vec<(String, i64)> =
-        sqlx::query_as("SELECT status::text, COUNT(*) FROM privacy_requests GROUP BY status")
-            .fetch_all(&state.db)
-            .await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let filas: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT status::text, COUNT(*) FROM privacy_requests WHERE ($1::uuid IS NULL OR tenant_id = $1) GROUP BY status",
+    )
+    .bind(scope)
+    .fetch_all(&state.db)
+    .await?;
     let mut por_estado = serde_json::Map::new();
     for e in ESTADOS_VALIDOS {
         por_estado.insert((*e).to_string(), json!(0));
@@ -925,8 +965,9 @@ pub async fn request_stats(
     let vencidas: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM privacy_requests WHERE due_at < NOW() AND status IN \
             ('recibida'::privacy_request_status, 'verificada'::privacy_request_status, \
-             'en_curso'::privacy_request_status)",
+             'en_curso'::privacy_request_status) AND ($1::uuid IS NULL OR tenant_id = $1)",
     )
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
     Ok(Json(

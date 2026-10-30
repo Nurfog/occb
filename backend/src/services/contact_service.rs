@@ -36,50 +36,73 @@ impl ContactService {
         &self,
         params: &PaginationParams,
         filters: &ContactFilters,
+        scope: Option<Uuid>,
     ) -> Result<PaginatedResponse<Contact>, AppError> {
         let page = params.page();
         let per_page = params.per_page();
-        let (contacts, total) = self.repo.find_all(params, filters).await?;
+        let (contacts, total) = self.repo.find_all(params, filters, scope).await?;
         Ok(PaginatedResponse::new(contacts, total, page, per_page))
     }
 
-    pub async fn get(&self, id: Uuid) -> Result<Contact, AppError> {
-        self.repo.find_by_id(id).await?.ok_or(AppError::NotFound)
+    pub async fn get(&self, id: Uuid, scope: Option<Uuid>) -> Result<Contact, AppError> {
+        self.repo
+            .find_by_id(id, scope)
+            .await?
+            .ok_or(AppError::NotFound)
     }
 
-    pub async fn create(&self, input: &CreateContact) -> Result<Contact, AppError> {
-        let contact = self.repo.create(input).await?;
+    pub async fn create(
+        &self,
+        input: &CreateContact,
+        scope: Option<Uuid>,
+    ) -> Result<Contact, AppError> {
+        let contact = self.repo.create(input, scope).await?;
         // TODO port: requiere audit (insert_audit_log "created"/"contact")
         // y webhooks (enqueue_event ContactCreated).
         Ok(contact)
     }
 
-    pub async fn update(&self, id: Uuid, input: &UpdateContact) -> Result<Contact, AppError> {
-        self.repo.find_by_id(id).await?.ok_or(AppError::NotFound)?;
+    pub async fn update(
+        &self,
+        id: Uuid,
+        input: &UpdateContact,
+        scope: Option<Uuid>,
+    ) -> Result<Contact, AppError> {
+        self.repo
+            .find_by_id(id, scope)
+            .await?
+            .ok_or(AppError::NotFound)?;
         let contact = self
             .repo
-            .update(id, input)
+            .update(id, input, scope)
             .await?
             .ok_or(AppError::NotFound)?;
         // TODO port: requiere audit ("updated") y webhooks (ContactUpdated).
         Ok(contact)
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<(), AppError> {
-        self.repo.delete(id).await?.ok_or(AppError::NotFound)?;
+    pub async fn delete(&self, id: Uuid, scope: Option<Uuid>) -> Result<(), AppError> {
+        self.repo
+            .delete(id, scope)
+            .await?
+            .ok_or(AppError::NotFound)?;
         // TODO port: requiere audit ("deleted") y webhooks (ContactDeleted).
         Ok(())
     }
 
-    pub async fn bulk_delete(&self, ids: &[Uuid]) -> Result<usize, AppError> {
-        let deleted = self.repo.bulk_delete(ids).await?;
+    pub async fn bulk_delete(&self, ids: &[Uuid], scope: Option<Uuid>) -> Result<usize, AppError> {
+        let deleted = self.repo.bulk_delete(ids, scope).await?;
         // TODO port: requiere audit por fila + webhooks (ContactDeleted).
         // (El origen leía las filas antes de borrar para auditarlas.)
         Ok(deleted)
     }
 
-    pub async fn export(&self, search: Option<&str>) -> Result<String, AppError> {
-        let contacts = self.repo.find_all_for_export(search).await?;
+    pub async fn export(
+        &self,
+        search: Option<&str>,
+        scope: Option<Uuid>,
+    ) -> Result<String, AppError> {
+        let contacts = self.repo.find_all_for_export(search, scope).await?;
 
         let mut csv = String::from("first_name,last_name,email,phone,position,company_id,notes\n");
         for c in &contacts {
@@ -98,7 +121,7 @@ impl ContactService {
         Ok(csv)
     }
 
-    pub async fn import(&self, body: &str) -> Result<ImportResult, AppError> {
+    pub async fn import(&self, body: &str, scope: Option<Uuid>) -> Result<ImportResult, AppError> {
         if body.len() > 2 * 1024 * 1024 {
             return Err(AppError::Validation(
                 "Import body too large (max 2MB)".into(),
@@ -158,6 +181,7 @@ impl ContactService {
                     candidate.email.as_deref(),
                     candidate.phone.as_deref(),
                     candidate.position.as_deref(),
+                    scope,
                 )
                 .await
             {

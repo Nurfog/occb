@@ -49,29 +49,33 @@ pub async fn insert_audit_log(
 pub async fn list_audit_logs(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Query(params): Query<AuditFilter>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("audit.view")
         .map_err(|_| AppError::Forbidden)?;
     params.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let per_page = params.per_page_clamped();
     let offset = params.offset();
 
     let logs = sqlx::query_as::<_, AuditLog>(
-        "SELECT id, user_id, action, entity_type, entity_id, old_values, new_values, \
-            ip_address::text, created_at FROM audit_log \
-         WHERE ($1::text IS NULL OR entity_type = $1) \
-           AND ($2::uuid IS NULL OR entity_id = $2) \
-           AND ($3::uuid IS NULL OR user_id = $3) \
-         ORDER BY created_at DESC LIMIT $4 OFFSET $5",
+        "SELECT a.id, a.user_id, a.action, a.entity_type, a.entity_id, a.old_values, a.new_values, \
+            a.ip_address::text, a.created_at FROM audit_log a \
+          LEFT JOIN users u ON u.id = a.user_id \
+         WHERE ($1::text IS NULL OR a.entity_type = $1) \
+           AND ($2::uuid IS NULL OR a.entity_id = $2) \
+           AND ($3::uuid IS NULL OR a.user_id = $3) \
+           AND ($6::uuid IS NULL OR u.tenant_id = $6) \
+         ORDER BY a.created_at DESC LIMIT $4 OFFSET $5",
     )
     .bind(params.entity_type.as_deref())
     .bind(params.entity_id)
     .bind(params.user_id)
     .bind(per_page)
     .bind(offset)
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(logs))
@@ -80,7 +84,7 @@ pub async fn list_audit_logs(
 pub async fn get_entity_history(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path((entity_type, entity_id)): Path<(String, Uuid)>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
@@ -90,6 +94,31 @@ pub async fn get_entity_history(
         return Err(AppError::Validation(
             "entity_type de 1 a 50 caracteres".into(),
         ));
+    }
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    // La entidad debe resolverse a una tabla con tenant_id; tipo desconocido -> 404.
+    // (nombres fijos por rama: sin interpolación de input en el SQL).
+    let tabla: &str = match entity_type.as_str() {
+        "contact" => "contacts",
+        "company" => "companies",
+        "deal" => "deals",
+        "lead" => "leads",
+        "activity" => "activities",
+        _ => return Err(AppError::NotFound),
+    };
+    // Platform (scope None) mantiene el comportamiento legacy; empresa solo
+    // ve el historial si la entidad es de su tenant (no visible -> 404).
+    if scope.is_some() {
+        let visible: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {tabla} WHERE id = $1 AND tenant_id = $2)"
+        ))
+        .bind(entity_id)
+        .bind(scope)
+        .fetch_one(&state.db)
+        .await?;
+        if !visible {
+            return Err(AppError::NotFound);
+        }
     }
     let logs = sqlx::query_as::<_, AuditLog>(
         "SELECT id, user_id, action, entity_type, entity_id, old_values, new_values, \

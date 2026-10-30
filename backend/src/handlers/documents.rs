@@ -44,13 +44,14 @@ const LIST_COLUMNS: &str = "id, filename, original_name, mime_type, file_size, f
 pub async fn list_documents(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Query(params): Query<DocumentFilter>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("documents.view")
         .map_err(|_| AppError::Forbidden)?;
     params.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     // Filtros opcionales con binds; el `format!` solo añade fragmentos fijos
     // con índices contados en el mismo orden en que se bindea.
     let mut sql = format!("SELECT {LIST_COLUMNS} FROM documents WHERE 1=1");
@@ -65,7 +66,11 @@ pub async fn list_documents(
     }
     if params.mime_type.is_some() {
         sql.push_str(&format!(" AND mime_type ILIKE ${idx} ESCAPE '\\'"));
+        idx += 1;
     }
+    sql.push_str(&format!(
+        " AND (${idx}::uuid IS NULL OR tenant_id = ${idx})"
+    ));
     sql.push_str(" ORDER BY created_at DESC");
 
     let search_pattern;
@@ -83,6 +88,7 @@ pub async fn list_documents(
         mime_pattern = format!("{}%", escape_like(mime));
         q = q.bind(mime_pattern.as_str());
     }
+    q = q.bind(scope);
 
     let documents = q.fetch_all(&state.db).await?;
     Ok(Json(documents))
@@ -91,15 +97,19 @@ pub async fn list_documents(
 pub async fn get_document(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("documents.view")
         .map_err(|_| AppError::Forbidden)?;
-    let sql = format!("SELECT {LIST_COLUMNS} FROM documents WHERE id = $1");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {LIST_COLUMNS} FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     let doc = sqlx::query_as::<_, Document>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -118,11 +128,12 @@ pub async fn create_document(
         .require("documents.upload")
         .map_err(|_| AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let uploaded_by = input.uploaded_by.unwrap_or(claims.sub);
     let doc = sqlx::query_as::<_, Document>(
         "INSERT INTO documents (filename, original_name, mime_type, file_size, folder, \
-            uploaded_by) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+            uploaded_by, tenant_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, filename, original_name, mime_type, file_size, folder, uploaded_by, \
             created_at, updated_at",
     )
@@ -132,6 +143,7 @@ pub async fn create_document(
     .bind(input.file_size)
     .bind(input.folder.as_deref())
     .bind(uploaded_by)
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
     Ok((StatusCode::CREATED, Json(doc)))
@@ -199,6 +211,7 @@ pub async fn upload_document(
     perms
         .require("documents.upload")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let max_bytes = state.upload.max_file_size_bytes();
 
     let mut folder: Option<String> = None;
@@ -264,8 +277,8 @@ pub async fn upload_document(
 
     let doc = sqlx::query_as::<_, Document>(
         "INSERT INTO documents (filename, original_name, mime_type, file_size, folder, \
-            uploaded_by) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+            uploaded_by, tenant_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, filename, original_name, mime_type, file_size, folder, uploaded_by, \
             created_at, updated_at",
     )
@@ -275,6 +288,7 @@ pub async fn upload_document(
     .bind(bytes.len() as i64)
     .bind(folder.as_deref())
     .bind(claims.sub)
+    .bind(scope)
     .fetch_one(&state.db)
     .await
     .map_err(|e| {
@@ -302,15 +316,19 @@ pub async fn upload_document(
 pub async fn download_document(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, AppError> {
     perms
         .require("documents.view")
         .map_err(|_| AppError::Forbidden)?;
-    let sql = format!("SELECT {LIST_COLUMNS} FROM documents WHERE id = $1");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {LIST_COLUMNS} FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     let doc = sqlx::query_as::<_, Document>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -362,23 +380,29 @@ pub async fn download_document(
 pub async fn delete_document(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
     // TODO storage: borrar también el binario del upload dir cuando exista.
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("documents.delete")
         .map_err(|_| AppError::Forbidden)?;
-    let sql = format!("SELECT {LIST_COLUMNS} FROM documents WHERE id = $1");
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let sql = format!(
+        "SELECT {LIST_COLUMNS} FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+    );
     sqlx::query_as::<_, Document>(&sql)
         .bind(id)
+        .bind(scope)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::NotFound)?;
-    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let result =
+        sqlx::query("DELETE FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)")
+            .bind(id)
+            .bind(scope)
+            .execute(&state.db)
+            .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }

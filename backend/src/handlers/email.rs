@@ -185,22 +185,30 @@ pub async fn send_email(
 pub async fn list_email_logs(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
     perms
         .require("email.view")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let (page, per_page, _sort, _dir) = normalize_list(&q);
     let offset = (page - 1) * per_page;
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_logs")
-        .fetch_one(&state.db)
-        .await?;
-    let logs = sqlx::query_as::<_, EmailLog>(
-        "SELECT id, from_email, to_email, cc, bcc, subject, body, body_html, entity_type, entity_id, status, template_id, sent_by, sent_at, created_at
-         FROM email_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM email_logs el LEFT JOIN users u ON u.id = el.sent_by \
+         WHERE ($1::uuid IS NULL OR u.tenant_id = $1)",
     )
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    let logs = sqlx::query_as::<_, EmailLog>(
+        "SELECT el.id, el.from_email, el.to_email, el.cc, el.bcc, el.subject, el.body, el.body_html, el.entity_type, el.entity_id, el.status, el.template_id, el.sent_by, el.sent_at, el.created_at
+         FROM email_logs el LEFT JOIN users u ON u.id = el.sent_by
+         WHERE ($1::uuid IS NULL OR u.tenant_id = $1)
+         ORDER BY el.created_at DESC LIMIT $2 OFFSET $3",
+    )
+    .bind(scope)
     .bind(per_page)
     .bind(offset)
     .fetch_all(&state.db)
@@ -215,17 +223,20 @@ pub async fn list_email_logs(
 pub async fn get_email_log(
     State(state): State<AppState>,
     perms: UserPermissions,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<EmailLog>, AppError> {
     perms
         .require("email.view")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let log = sqlx::query_as::<_, EmailLog>(
-        "SELECT id, from_email, to_email, cc, bcc, subject, body, body_html, entity_type, entity_id, status, template_id, sent_by, sent_at, created_at
-         FROM email_logs WHERE id = $1",
+        "SELECT el.id, el.from_email, el.to_email, el.cc, el.bcc, el.subject, el.body, el.body_html, el.entity_type, el.entity_id, el.status, el.template_id, el.sent_by, el.sent_at, el.created_at
+         FROM email_logs el LEFT JOIN users u ON u.id = el.sent_by
+         WHERE el.id = $1 AND ($2::uuid IS NULL OR u.tenant_id = $2)",
     )
     .bind(id)
+    .bind(scope)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;

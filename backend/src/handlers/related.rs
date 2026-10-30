@@ -22,13 +22,24 @@ const ACTIVITY_COLS: &str = "id, subject, description, activity_type, due_date, 
 
 pub async fn get_contact_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("contacts.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let deals = sqlx::query_as::<_, Deal>(&format!(
         "SELECT {DEAL_COLS} FROM deals WHERE contact_id = $1 ORDER BY created_at DESC"
     ))
@@ -41,13 +52,24 @@ pub async fn get_contact_deals(
 
 pub async fn get_contact_activities(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("contacts.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let activities = sqlx::query_as::<_, Activity>(&format!(
         "SELECT {ACTIVITY_COLS} FROM activities WHERE contact_id = $1 ORDER BY due_date DESC"
     ))
@@ -60,13 +82,24 @@ pub async fn get_contact_activities(
 
 pub async fn get_company_contacts(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("companies.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let contacts = sqlx::query_as::<_, Contact>(
         "SELECT id, first_name, last_name, email, phone, company_id, position, notes, created_at, updated_at FROM contacts WHERE company_id = $1 ORDER BY created_at DESC"
     )
@@ -79,13 +112,24 @@ pub async fn get_company_contacts(
 
 pub async fn get_company_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("companies.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let deals = sqlx::query_as::<_, Deal>(&format!(
         "SELECT {DEAL_COLS} FROM deals WHERE company_id = $1 ORDER BY created_at DESC"
     ))
@@ -98,13 +142,24 @@ pub async fn get_company_deals(
 
 pub async fn get_deal_activities(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("deals.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM deals WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let activities = sqlx::query_as::<_, Activity>(&format!(
         "SELECT {ACTIVITY_COLS} FROM activities WHERE deal_id = $1 ORDER BY due_date DESC"
     ))
@@ -117,13 +172,24 @@ pub async fn get_deal_activities(
 
 pub async fn get_company_revenue(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("companies.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+    )
+    .bind(id)
+    .bind(scope)
+    .fetch_one(&state.db)
+    .await?;
+    if !visible {
+        return Err(AppError::NotFound);
+    }
     let result: (Option<f64>, i64) = sqlx::query_as(
         "SELECT SUM(value)::float8, COUNT(*) FROM deals WHERE company_id = $1 AND stage IN ('closed_won', 'proposal', 'negotiation')"
     )

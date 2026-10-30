@@ -27,7 +27,7 @@ use crate::{auth::Claims, error::AppError, state::AppState};
 
 pub async fn list_companies(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -45,10 +45,11 @@ pub async fn list_companies(
         .as_ref()
         .map(|s| format!("%{}%", escape_like(s)));
 
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let count_query = if search_filter.is_some() {
-        "SELECT COUNT(*) FROM companies WHERE name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\'".to_string()
+        "SELECT COUNT(*) FROM companies WHERE (name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\') AND ($2::uuid IS NULL OR tenant_id = $2)".to_string()
     } else {
-        "SELECT COUNT(*) FROM companies".to_string()
+        "SELECT COUNT(*) FROM companies WHERE ($1::uuid IS NULL OR tenant_id = $1)".to_string()
     };
 
     // sort_col/sort_dir son constantes de lista blanca: interpolar es seguro.
@@ -56,7 +57,8 @@ pub async fn list_companies(
         format!(
             "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at
              FROM companies
-             WHERE name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\'
+             WHERE (name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\')
+             AND ($4::uuid IS NULL OR tenant_id = $4)
              ORDER BY {} {}
              LIMIT $2 OFFSET $3",
             sort_col, sort_dir
@@ -65,6 +67,7 @@ pub async fn list_companies(
         format!(
             "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at
              FROM companies
+             WHERE ($3::uuid IS NULL OR tenant_id = $3)
              ORDER BY {} {}
              LIMIT $1 OFFSET $2",
             sort_col, sort_dir
@@ -74,10 +77,14 @@ pub async fn list_companies(
     let total: (i64,) = if let Some(ref search) = search_filter {
         sqlx::query_as(&count_query)
             .bind(search)
+            .bind(scope)
             .fetch_one(&state.db)
             .await?
     } else {
-        sqlx::query_as(&count_query).fetch_one(&state.db).await?
+        sqlx::query_as(&count_query)
+            .bind(scope)
+            .fetch_one(&state.db)
+            .await?
     };
 
     let companies = if let Some(ref search) = search_filter {
@@ -85,12 +92,14 @@ pub async fn list_companies(
             .bind(search)
             .bind(per_page)
             .bind(offset)
+            .bind(scope)
             .fetch_all(&state.db)
             .await?
     } else {
         sqlx::query_as::<_, Company>(&data_query)
             .bind(per_page)
             .bind(offset)
+            .bind(scope)
             .fetch_all(&state.db)
             .await?
     };
@@ -110,11 +119,12 @@ pub async fn create_company(
         .require("companies.create")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
 
     let company = sqlx::query_as::<_, Company>(
         r#"
-        INSERT INTO companies (name, industry, website, phone, email, address, city, country, notes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO companies (name, industry, website, phone, email, address, city, country, notes, tenant_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at
         "#,
     )
@@ -127,6 +137,7 @@ pub async fn create_company(
     .bind(&input.city)
     .bind(&input.country)
     .bind(&input.notes)
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -145,17 +156,19 @@ pub async fn create_company(
 
 pub async fn get_company(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("companies.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let company = sqlx::query_as::<_, Company>(
-        "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies WHERE id = $1"
+        "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
     )
     .bind(id)
+    .bind(scope)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -188,7 +201,7 @@ pub async fn update_company(
             country = COALESCE($9, country),
             notes = COALESCE($10, notes),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND ($11::uuid IS NULL OR tenant_id = $11)
         RETURNING id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at
         "#,
     )
@@ -202,6 +215,7 @@ pub async fn update_company(
     .bind(&input.city)
     .bind(&input.country)
     .bind(&input.notes)
+    .bind(crate::auth::tenant_scope(&state, &claims.sub).await?)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -228,10 +242,13 @@ pub async fn delete_company(
     perms
         .require("companies.delete")
         .map_err(|_| crate::error::AppError::Forbidden)?;
-    let result = sqlx::query("DELETE FROM companies WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let result =
+        sqlx::query("DELETE FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)")
+            .bind(id)
+            .bind(scope)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
@@ -252,13 +269,14 @@ pub async fn delete_company(
 
 pub async fn export_companies(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("companies.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let search_filter = params
         .search
         .as_ref()
@@ -268,15 +286,17 @@ pub async fn export_companies(
     // Tope 10k filas para acotar memoria/tiempo.
     let companies = if let Some(ref search) = search_filter {
         sqlx::query_as::<_, Company>(
-            "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies WHERE name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\' ORDER BY created_at DESC LIMIT 10000"
+            "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies WHERE (name ILIKE $1 ESCAPE '\\' OR industry ILIKE $1 ESCAPE '\\' OR city ILIKE $1 ESCAPE '\\' OR country ILIKE $1 ESCAPE '\\') AND ($2::uuid IS NULL OR tenant_id = $2) ORDER BY created_at DESC LIMIT 10000"
         )
         .bind(search)
+        .bind(scope)
         .fetch_all(&state.db)
         .await?
     } else {
         sqlx::query_as::<_, Company>(
-            "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies ORDER BY created_at DESC LIMIT 10000"
+            "SELECT id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at FROM companies WHERE ($1::uuid IS NULL OR tenant_id = $1) ORDER BY created_at DESC LIMIT 10000"
         )
+        .bind(scope)
         .fetch_all(&state.db)
         .await?
     };
@@ -312,7 +332,7 @@ pub async fn export_companies(
 
 pub async fn import_companies(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
@@ -333,6 +353,7 @@ pub async fn import_companies(
         ));
     }
 
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let mut imported = 0;
     let mut errors = Vec::new();
 
@@ -365,8 +386,8 @@ pub async fn import_companies(
 
         let result = sqlx::query_as::<_, Company>(
             r#"
-            INSERT INTO companies (name, industry, website, phone, email, address, city, country, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO companies (name, industry, website, phone, email, address, city, country, notes, tenant_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id, name, industry, website, phone, email, address, city, country, notes, created_at, updated_at
             "#,
         )
@@ -379,6 +400,7 @@ pub async fn import_companies(
         .bind(&candidate.city)
         .bind(&candidate.country)
         .bind(&candidate.notes)
+        .bind(scope)
         .fetch_one(&state.db)
         .await;
 

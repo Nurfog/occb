@@ -53,11 +53,13 @@ pub struct AdminUpdateUserInput {
 pub async fn admin_list_users(
     State(state): State<AppState>,
     perms: UserPermissions,
+    Extension(claims): Extension<Claims>,
     Query(q): Query<ListQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("admin.access")
         .map_err(|_| AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let (page, per_page, sort_col, sort_dir) = normalize_list(&q);
     let offset = (page - 1) * per_page;
     let pattern = q.q.as_deref().map(|s| format!("%{}%", escape_like(s)));
@@ -66,9 +68,11 @@ pub async fn admin_list_users(
         "SELECT COUNT(*) FROM users
          WHERE ($1::text IS NULL
             OR email::text ILIKE $1 ESCAPE '\\'
-            OR name ILIKE $1 ESCAPE '\\')",
+            OR name ILIKE $1 ESCAPE '\\')
+           AND ($2::uuid IS NULL OR tenant_id = $2)",
     )
     .bind(pattern.as_deref())
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
@@ -78,12 +82,14 @@ pub async fn admin_list_users(
          WHERE ($1::text IS NULL
             OR email::text ILIKE $1 ESCAPE '\\'
             OR name ILIKE $1 ESCAPE '\\')
+           AND ($4::uuid IS NULL OR tenant_id = $4)
          ORDER BY {sort_col} {sort_dir} LIMIT $2 OFFSET $3"
     );
     let users = sqlx::query_as::<_, UserPublic>(&sql)
         .bind(pattern.as_deref())
         .bind(per_page)
         .bind(offset)
+        .bind(scope)
         .fetch_all(&state.db)
         .await?;
 

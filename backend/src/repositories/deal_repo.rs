@@ -20,11 +20,18 @@ impl PgDealRepo {
         Self { pool }
     }
 
-    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Deal>, AppError> {
-        let deal = sqlx::query_as::<_, Deal>(DEAL_SELECT_BY_ID)
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+    pub async fn find_by_id(
+        &self,
+        id: Uuid,
+        scope: Option<Uuid>,
+    ) -> Result<Option<Deal>, AppError> {
+        let deal = sqlx::query_as::<_, Deal>(&format!(
+            "{DEAL_SELECT_BY_ID} AND ($2::uuid IS NULL OR d.tenant_id = $2)"
+        ))
+        .bind(id)
+        .bind(scope)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(deal)
     }
 
@@ -39,9 +46,35 @@ impl PgDealRepo {
         company_id: Option<Uuid>,
         expected_close_date: Option<chrono::DateTime<chrono::Utc>>,
         notes: Option<&str>,
+        scope: Option<Uuid>,
     ) -> Result<Deal, AppError> {
+        // Links apuntados deben ser visibles (evita cross-link entre empresas).
+        if let Some(cid) = contact_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(cid)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
+        if let Some(coid) = company_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(coid)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
         let row = sqlx::query(
-            "INSERT INTO deals (title, value, currency, stage, contact_id, company_id, expected_close_date, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
+            "INSERT INTO deals (title, value, currency, stage, contact_id, company_id, expected_close_date, notes, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
         )
         .bind(title)
         .bind(value)
@@ -51,15 +84,45 @@ impl PgDealRepo {
         .bind(company_id)
         .bind(expected_close_date)
         .bind(notes)
+        .bind(scope)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(map_deal_row(row))
     }
 
-    pub async fn update(&self, id: Uuid, input: &UpdateDeal) -> Result<Option<Deal>, AppError> {
+    pub async fn update(
+        &self,
+        id: Uuid,
+        input: &UpdateDeal,
+        scope: Option<Uuid>,
+    ) -> Result<Option<Deal>, AppError> {
+        if let Some(cid) = input.contact_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(cid)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
+        if let Some(coid) = input.company_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(coid)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
         let row = sqlx::query(
-            "UPDATE deals SET title = COALESCE($2, title), value = COALESCE($3, value), currency = COALESCE($4, currency), stage = COALESCE($5, stage), contact_id = COALESCE($6, contact_id), company_id = COALESCE($7, company_id), expected_close_date = COALESCE($8, expected_close_date), notes = COALESCE($9, notes), updated_at = NOW() WHERE id = $1 RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
+            "UPDATE deals SET title = COALESCE($2, title), value = COALESCE($3, value), currency = COALESCE($4, currency), stage = COALESCE($5, stage), contact_id = COALESCE($6, contact_id), company_id = COALESCE($7, company_id), expected_close_date = COALESCE($8, expected_close_date), notes = COALESCE($9, notes), updated_at = NOW() WHERE id = $1 AND ($10::uuid IS NULL OR tenant_id = $10) RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
         )
         .bind(id)
         .bind(&input.title)
@@ -70,6 +133,7 @@ impl PgDealRepo {
         .bind(input.company_id)
         .bind(input.expected_close_date)
         .bind(&input.notes)
+        .bind(scope)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -81,29 +145,33 @@ impl PgDealRepo {
         id: Uuid,
         stage: DealStage,
         position: Option<i32>,
+        scope: Option<Uuid>,
     ) -> Result<Option<Deal>, AppError> {
         let row = sqlx::query(
-            "UPDATE deals SET stage = $2, position = COALESCE($3, position), updated_at = NOW() WHERE id = $1 RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
+            "UPDATE deals SET stage = $2, position = COALESCE($3, position), updated_at = NOW() WHERE id = $1 AND ($4::uuid IS NULL OR tenant_id = $4) RETURNING id, title, value::float8 AS value, currency, stage, position, contact_id, company_id, pipeline_id, pipeline_stage_id, expected_close_date, notes, (SELECT CONCAT(c.first_name, ' ', c.last_name) FROM contacts c WHERE c.id = contact_id) as contact_name, (SELECT co.name FROM companies co WHERE co.id = company_id) as company_name, created_at, updated_at"
         )
         .bind(id)
         .bind(stage)
         .bind(position)
+        .bind(scope)
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(map_deal_row))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<Option<Deal>, AppError> {
-        let old = self.find_by_id(id).await?;
+    pub async fn delete(&self, id: Uuid, scope: Option<Uuid>) -> Result<Option<Deal>, AppError> {
+        let old = self.find_by_id(id, scope).await?;
         if old.is_none() {
             return Ok(None);
         }
 
-        let result = sqlx::query("DELETE FROM deals WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("DELETE FROM deals WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)")
+                .bind(id)
+                .bind(scope)
+                .execute(&self.pool)
+                .await?;
 
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -112,21 +180,27 @@ impl PgDealRepo {
         Ok(old)
     }
 
-    pub async fn find_all_for_export(&self, search: Option<&str>) -> Result<Vec<Deal>, AppError> {
+    pub async fn find_all_for_export(
+        &self,
+        search: Option<&str>,
+        scope: Option<Uuid>,
+    ) -> Result<Vec<Deal>, AppError> {
         // TODO: stremear el CSV en vez de cargar todo en memoria.
         // Tope de 10k filas para acotar memoria/tiempo.
         let deals = if let Some(search) = search {
             let pattern = format!("%{}%", crate::models::escape_like(search));
             sqlx::query_as::<_, Deal>(&format!(
-                "{DEAL_SELECT} WHERE d.title ILIKE $1 ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) ORDER BY d.created_at DESC LIMIT 10000"
+                "{DEAL_SELECT} WHERE d.title ILIKE $1 ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) AND ($2::uuid IS NULL OR d.tenant_id = $2) ORDER BY d.created_at DESC LIMIT 10000"
             ))
             .bind(pattern)
+            .bind(scope)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query_as::<_, Deal>(&format!(
-                "{DEAL_SELECT} WHERE NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) ORDER BY d.created_at DESC LIMIT 10000"
+                "{DEAL_SELECT} WHERE NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = d.contact_id AND c.blocked = TRUE) AND ($1::uuid IS NULL OR d.tenant_id = $1) ORDER BY d.created_at DESC LIMIT 10000"
             ))
+            .bind(scope)
             .fetch_all(&self.pool)
             .await?
         };

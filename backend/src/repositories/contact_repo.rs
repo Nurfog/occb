@@ -18,10 +18,22 @@ const BASE_SELECT: &str = "SELECT id, first_name, last_name, email, phone, compa
 /// WHERE compartido para COUNT y SELECT.
 /// `sort_col`/`sort_dir` vienen de lista blanca, así que interpolarlos como
 /// identificadores es seguro; todos los valores usan binds.
+/// Predicado de aislamiento por empresa (fase 2): platform (None) ve todo,
+/// tenant solo sus filas. Se añade con binds (QueryBuilder numera solo).
+fn push_tenant_scope(qb: &mut QueryBuilder<'_, Postgres>, scope: Option<Uuid>) {
+    // OJO: push_bind ya genera el `$N`; aquí solo va el paréntesis.
+    qb.push("(");
+    qb.push_bind(scope);
+    qb.push("::uuid IS NULL OR tenant_id = ");
+    qb.push_bind(scope);
+    qb.push(")");
+}
+
 fn push_contact_conditions(
     qb: &mut QueryBuilder<'_, Postgres>,
     params: &PaginationParams,
     filters: &ContactFilters,
+    scope: Option<Uuid>,
 ) -> Result<(), AppError> {
     let mut first = true;
     let mut and = |qb: &mut QueryBuilder<'_, Postgres>| {
@@ -88,6 +100,9 @@ fn push_contact_conditions(
         qb.push("::date + INTERVAL '1 day')");
     }
 
+    and(qb);
+    push_tenant_scope(qb, scope);
+
     Ok(())
 }
 
@@ -109,6 +124,7 @@ impl PgContactRepo {
         &self,
         params: &PaginationParams,
         filters: &ContactFilters,
+        scope: Option<Uuid>,
     ) -> Result<(Vec<Contact>, i64), AppError> {
         let per_page = params.per_page();
         let offset = params.offset();
@@ -117,11 +133,11 @@ impl PgContactRepo {
 
         let mut count_qb: QueryBuilder<Postgres> =
             QueryBuilder::new("SELECT COUNT(*) FROM contacts");
-        push_contact_conditions(&mut count_qb, params, filters)?;
+        push_contact_conditions(&mut count_qb, params, filters, scope)?;
         let count_fut = count_qb.build_query_as::<(i64,)>().fetch_one(&self.pool);
 
         let mut data_qb: QueryBuilder<Postgres> = QueryBuilder::new(BASE_SELECT);
-        push_contact_conditions(&mut data_qb, params, filters)?;
+        push_contact_conditions(&mut data_qb, params, filters, scope)?;
         data_qb.push(" ORDER BY ");
         data_qb.push(sort_col);
         data_qb.push(" ");
@@ -137,19 +153,43 @@ impl PgContactRepo {
         Ok((contacts?, total?.0))
     }
 
-    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Contact>, AppError> {
-        let contact = sqlx::query_as::<_, Contact>(&format!("{BASE_SELECT} WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+    pub async fn find_by_id(
+        &self,
+        id: Uuid,
+        scope: Option<Uuid>,
+    ) -> Result<Option<Contact>, AppError> {
+        let contact = sqlx::query_as::<_, Contact>(&format!(
+            "{BASE_SELECT} WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)"
+        ))
+        .bind(id)
+        .bind(scope)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(contact)
     }
 
-    pub async fn create(&self, input: &CreateContact) -> Result<Contact, AppError> {
+    pub async fn create(
+        &self,
+        input: &CreateContact,
+        scope: Option<Uuid>,
+    ) -> Result<Contact, AppError> {
+        // company_id apuntado debe ser visible (evita cross-link entre empresas).
+        if let Some(company_id) = input.company_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(company_id)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
         let contact = sqlx::query_as::<_, Contact>(
             r#"
-            INSERT INTO contacts (first_name, last_name, email, phone, company_id, position, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO contacts (first_name, last_name, email, phone, company_id, position, notes, tenant_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, first_name, last_name, email, phone, company_id, position, notes, created_at, updated_at
             "#,
         )
@@ -160,6 +200,7 @@ impl PgContactRepo {
         .bind(input.company_id)
         .bind(&input.position)
         .bind(&input.notes)
+        .bind(scope)
         .fetch_one(&self.pool)
         .await?;
         Ok(contact)
@@ -169,7 +210,20 @@ impl PgContactRepo {
         &self,
         id: Uuid,
         input: &UpdateContact,
+        scope: Option<Uuid>,
     ) -> Result<Option<Contact>, AppError> {
+        if let Some(company_id) = input.company_id {
+            let visible: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2))",
+            )
+            .bind(company_id)
+            .bind(scope)
+            .fetch_one(&self.pool)
+            .await?;
+            if !visible {
+                return Err(AppError::NotFound);
+            }
+        }
         let contact = sqlx::query_as::<_, Contact>(
             r#"
             UPDATE contacts
@@ -181,7 +235,7 @@ impl PgContactRepo {
                 position = COALESCE($7, position),
                 notes = COALESCE($8, notes),
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND ($9::uuid IS NULL OR tenant_id = $9)
             RETURNING id, first_name, last_name, email, phone, company_id, position, notes, created_at, updated_at
             "#,
         )
@@ -193,21 +247,25 @@ impl PgContactRepo {
         .bind(input.company_id)
         .bind(&input.position)
         .bind(&input.notes)
+        .bind(scope)
         .fetch_optional(&self.pool)
         .await?;
         Ok(contact)
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<Option<Contact>, AppError> {
-        let old = self.find_by_id(id).await?;
+    pub async fn delete(&self, id: Uuid, scope: Option<Uuid>) -> Result<Option<Contact>, AppError> {
+        let old = self.find_by_id(id, scope).await?;
         if old.is_none() {
             return Ok(None);
         }
 
-        let result = sqlx::query("DELETE FROM contacts WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let result = sqlx::query(
+            "DELETE FROM contacts WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)",
+        )
+        .bind(id)
+        .bind(scope)
+        .execute(&self.pool)
+        .await?;
 
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -216,35 +274,41 @@ impl PgContactRepo {
         Ok(old)
     }
 
-    pub async fn bulk_delete(&self, ids: &[Uuid]) -> Result<usize, AppError> {
+    pub async fn bulk_delete(&self, ids: &[Uuid], scope: Option<Uuid>) -> Result<usize, AppError> {
         if ids.is_empty() {
             return Ok(0);
         }
-        let result = sqlx::query("DELETE FROM contacts WHERE id = ANY($1)")
-            .bind(ids)
-            .execute(&self.pool)
-            .await?;
+        let result = sqlx::query(
+            "DELETE FROM contacts WHERE id = ANY($1) AND ($2::uuid IS NULL OR tenant_id = $2)",
+        )
+        .bind(ids)
+        .bind(scope)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() as usize)
     }
 
     pub async fn find_all_for_export(
         &self,
         search: Option<&str>,
+        scope: Option<Uuid>,
     ) -> Result<Vec<Contact>, AppError> {
         // TODO: stremear el CSV en vez de cargar todo en memoria.
         // Tope de 10k filas para acotar memoria/tiempo.
         let contacts = if let Some(search) = search {
             let pattern = format!("%{}%", crate::models::escape_like(search));
             sqlx::query_as::<_, Contact>(&format!(
-                "{BASE_SELECT} WHERE (first_name ILIKE $1 ESCAPE '\\' OR last_name ILIKE $1 ESCAPE '\\' OR email ILIKE $1 ESCAPE '\\') AND (blocked IS NULL OR blocked = FALSE) ORDER BY created_at DESC LIMIT 10000"
+                "{BASE_SELECT} WHERE (first_name ILIKE $1 ESCAPE '\\' OR last_name ILIKE $1 ESCAPE '\\' OR email ILIKE $1 ESCAPE '\\') AND (blocked IS NULL OR blocked = FALSE) AND ($2::uuid IS NULL OR tenant_id = $2) ORDER BY created_at DESC LIMIT 10000"
             ))
             .bind(pattern)
+            .bind(scope)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query_as::<_, Contact>(&format!(
-                "{BASE_SELECT} WHERE (blocked IS NULL OR blocked = FALSE) ORDER BY created_at DESC LIMIT 10000"
+                "{BASE_SELECT} WHERE (blocked IS NULL OR blocked = FALSE) AND ($1::uuid IS NULL OR tenant_id = $1) ORDER BY created_at DESC LIMIT 10000"
             ))
+            .bind(scope)
             .fetch_all(&self.pool)
             .await?
         };
@@ -258,11 +322,12 @@ impl PgContactRepo {
         email: Option<&str>,
         phone: Option<&str>,
         position: Option<&str>,
+        scope: Option<Uuid>,
     ) -> Result<Contact, AppError> {
         let contact = sqlx::query_as::<_, Contact>(
             r#"
-            INSERT INTO contacts (first_name, last_name, email, phone, position)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO contacts (first_name, last_name, email, phone, position, tenant_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, first_name, last_name, email, phone, company_id, position, notes, created_at, updated_at
             "#,
         )
@@ -271,6 +336,7 @@ impl PgContactRepo {
         .bind(email)
         .bind(phone)
         .bind(position)
+        .bind(scope)
         .fetch_one(&self.pool)
         .await?;
         Ok(contact)

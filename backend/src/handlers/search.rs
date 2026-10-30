@@ -43,7 +43,7 @@ pub struct SearchResponse {
 
 pub async fn global_search(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<SearchParams>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -51,6 +51,7 @@ pub async fn global_search(
         .require("search.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     params.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Ok(Json(SearchResponse {
@@ -72,11 +73,13 @@ pub async fn global_search(
            OR email ILIKE $1 ESCAPE '\')
           -- Ley 21.719 (bloqueo): no tratar datos bloqueados ni en búsqueda.
           AND (blocked IS NULL OR blocked = FALSE)
+          AND ($2::uuid IS NULL OR tenant_id = $2)
         ORDER BY first_name ASC
-        LIMIT $2
+        LIMIT $3
         "#,
     )
     .bind(&search_pattern)
+    .bind(scope)
     .bind(limit)
     .fetch_all(&state.db);
 
@@ -84,13 +87,15 @@ pub async fn global_search(
         r#"
         SELECT id, name, industry
         FROM companies
-        WHERE name ILIKE $1 ESCAPE '\'
-           OR industry ILIKE $1 ESCAPE '\'
+        WHERE (name ILIKE $1 ESCAPE '\'
+           OR industry ILIKE $1 ESCAPE '\')
+          AND ($2::uuid IS NULL OR tenant_id = $2)
         ORDER BY name ASC
-        LIMIT $2
+        LIMIT $3
         "#,
     )
     .bind(&search_pattern)
+    .bind(scope)
     .bind(limit)
     .fetch_all(&state.db);
 
@@ -99,11 +104,13 @@ pub async fn global_search(
         SELECT id, title, value::float8, stage::text
         FROM deals
         WHERE title ILIKE $1 ESCAPE '\'
+          AND ($2::uuid IS NULL OR tenant_id = $2)
         ORDER BY created_at DESC
-        LIMIT $2
+        LIMIT $3
         "#,
     )
     .bind(&search_pattern)
+    .bind(scope)
     .bind(limit)
     .fetch_all(&state.db);
 

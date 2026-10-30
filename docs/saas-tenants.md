@@ -29,25 +29,27 @@
 
 Frontend: `/admin` (gateado por `me.is_superadmin`).
 
-## Fase 2: aislamiento por filas (pendiente, plan)
+## Fase 2: aislamiento por filas (IMPLEMENTADO)
 
-Hoy las filas CRM son globales: un usuario de una empresa ve los mismos
-contactos/deals que otra. Para aislamiento real por empresa:
+Filas CRM con `tenant_id` (migración `046`; sin backfill destructivo: las
+filas legacy con NULL quedan visibles solo para platform, nunca para
+tenants). Regla única en `auth::tenant_scope`:
 
-1. Migración: `tenant_id UUID NULL REFERENCES tenants(id)` en `contacts`,
-   `companies`, `deals`, `activities`, `leads`, `documents`,
-   `privacy_requests`, `webhooks` (+ índice). Backfill: filas existentes al
-   tenant `principal` (o NULL = visible global, decisión a tomar).
-2. App: `AND (tenant_id = $X OR tenant_id IS NULL)` —o estricto sin NULL—
-   en cada listado/detalle/export/búsqueda, con `tenant_id` tomado del
-   `Claims` (extender claims con tenant en el login, no consultar por
-   request). `POST` fija `tenant_id` del creador; superadmin opera
-   cross-tenant con `?tenant=` explícito auditado.
-3. RLS: `CREATE POLICY tenant_isolation ... USING (tenant_id = current_setting('app.tenant')::uuid)` con `SET LOCAL` por request como segunda capa (defensa en profundidad, igual que `040`).
-4. Licencias por tenant: `module_licensed` filtra además por `tenant_id` del
-   JWT, de modo que el DLC `flow` se vende por empresa.
-5. Tests: e2e dos tenants (A no ve filas de B en lists/search/exports;
-   suspender bloquea API; superadmin ve todo).
-
-No implementar la fase 2 a medias: o global documentado (hoy) o aislado
-verificado e2e.
+- Usuario platform (`tenant_id NULL`, incl. superadmin): sin filtro (todo).
+- Usuario de empresa: `AND ($N::uuid IS NULL OR tenant_id = $N)` en cada
+  listado/detalle/búsqueda/export/count; escrituras sellan el tenant del
+  creador; updates/deletes exigen la fila visible (0 filas -> 404, sin
+  filtrar existencia); cross-links (`contact_id`/`company_id`) se validan
+  visibles (404 si no).
+- Alcance: contacts, companies, deals, activities, leads (+ sus
+  actividades), documents, privacy_requests, related (vía padre), search,
+  dashboard, reports, audit (vía usuarios), email logs (vía `sent_by`),
+  calendar (vía usuarios del tenant), admin users.
+- Licencias por empresa: `module_licensed` filtra por tenant del JWT;
+  superadmin bypass; `/modules` reporta cobertura por usuario.
+- Fuera de alcance (documentado): tags globales (las asignaciones se
+  validan por entidad visible), webhooks platform, notificaciones ya
+  user-scoped.
+- RLS como segunda capa queda pendiente: exige roles DB por tenant
+  (hoy un solo rol `occb_app`); el enforcement app está verificado e2e
+  (tests de fugas A/B en cada área).

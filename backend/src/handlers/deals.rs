@@ -48,7 +48,7 @@ fn normalize_deal_sort(
 
 pub async fn list_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -66,10 +66,17 @@ pub async fn list_deals(
         .as_ref()
         .map(|s| format!("%{}%", crate::models::escape_like(s)));
 
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let count_query = if search_filter.is_some() {
-        crate::queries::deal_queries::DEAL_COUNT_SEARCH
+        format!(
+            "{} AND ($2::uuid IS NULL OR tenant_id = $2)",
+            crate::queries::deal_queries::DEAL_COUNT_SEARCH
+        )
     } else {
-        crate::queries::deal_queries::DEAL_COUNT
+        format!(
+            "{} WHERE ($1::uuid IS NULL OR tenant_id = $1)",
+            crate::queries::deal_queries::DEAL_COUNT
+        )
     };
 
     let base_select = crate::queries::deal_queries::DEAL_SELECT;
@@ -77,19 +84,25 @@ pub async fn list_deals(
     // sort_col/sort_dir son constantes de lista blanca.
     let data_query = if search_filter.is_some() {
         format!(
-            "{base_select} WHERE d.title ILIKE $1 ESCAPE '\\' ORDER BY {sort_col} {sort_dir} LIMIT $2 OFFSET $3"
+            "{base_select} WHERE d.title ILIKE $1 ESCAPE '\\' AND ($4::uuid IS NULL OR d.tenant_id = $4) ORDER BY {sort_col} {sort_dir} LIMIT $2 OFFSET $3"
         )
     } else {
-        format!("{base_select} ORDER BY {sort_col} {sort_dir} LIMIT $1 OFFSET $2")
+        format!(
+            "{base_select} WHERE ($3::uuid IS NULL OR d.tenant_id = $3) ORDER BY {sort_col} {sort_dir} LIMIT $1 OFFSET $2"
+        )
     };
 
     let total: (i64,) = if let Some(ref search) = search_filter {
-        sqlx::query_as(count_query)
+        sqlx::query_as(&count_query)
             .bind(search)
+            .bind(scope)
             .fetch_one(&state.db)
             .await?
     } else {
-        sqlx::query_as(count_query).fetch_one(&state.db).await?
+        sqlx::query_as(&count_query)
+            .bind(scope)
+            .fetch_one(&state.db)
+            .await?
     };
 
     let deals = if let Some(ref search) = search_filter {
@@ -97,12 +110,14 @@ pub async fn list_deals(
             .bind(search)
             .bind(per_page)
             .bind(offset)
+            .bind(scope)
             .fetch_all(&state.db)
             .await?
     } else {
         sqlx::query_as::<_, Deal>(&data_query)
             .bind(per_page)
             .bind(offset)
+            .bind(scope)
             .fetch_all(&state.db)
             .await?
     };
@@ -124,6 +139,7 @@ pub async fn create_deal(
     let stage = input.stage.unwrap_or(DealStage::Lead);
     let currency = input.currency.unwrap_or_else(|| "USD".to_string());
 
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let deal = PgDealRepo::new(state.db.clone())
         .create(
             &input.title,
@@ -134,6 +150,7 @@ pub async fn create_deal(
             input.company_id,
             input.expected_close_date,
             input.notes.as_deref(),
+            scope,
         )
         .await?;
 
@@ -158,15 +175,16 @@ pub async fn create_deal(
 
 pub async fn get_deal(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("deals.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let deal = PgDealRepo::new(state.db.clone())
-        .find_by_id(id)
+        .find_by_id(id, scope)
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(deal))
@@ -184,9 +202,15 @@ pub async fn update_deal(
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
 
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let repo = PgDealRepo::new(state.db.clone());
-    repo.find_by_id(id).await?.ok_or(AppError::NotFound)?;
-    let deal = repo.update(id, &input).await?.ok_or(AppError::NotFound)?;
+    repo.find_by_id(id, scope)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let deal = repo
+        .update(id, &input, scope)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
@@ -216,8 +240,9 @@ pub async fn delete_deal(
     perms
         .require("deals.delete")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let old = PgDealRepo::new(state.db.clone())
-        .delete(id)
+        .delete(id, scope)
         .await?
         .ok_or(AppError::NotFound)?;
     let _ = old;
@@ -243,15 +268,16 @@ pub async fn delete_deal(
 
 pub async fn export_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("deals.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let deals = PgDealRepo::new(state.db.clone())
-        .find_all_for_export(params.search.as_deref())
+        .find_all_for_export(params.search.as_deref(), scope)
         .await?;
 
     let mut csv = String::from(
@@ -293,7 +319,7 @@ pub async fn export_deals(
 
 pub async fn import_deals(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
@@ -316,6 +342,7 @@ pub async fn import_deals(
 
     let mut imported = 0;
     let mut errors = Vec::new();
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let repo = PgDealRepo::new(state.db.clone());
 
     for (row_num, fields) in rows.iter().enumerate() {
@@ -337,6 +364,7 @@ pub async fn import_deals(
                 row.company_id,
                 row.expected_close_date,
                 row.notes.as_deref(),
+                scope,
             )
             .await
         {
@@ -358,10 +386,13 @@ pub async fn update_deal_stage(
     perms
         .require("deals.edit")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let repo = PgDealRepo::new(state.db.clone());
-    repo.find_by_id(id).await?.ok_or(AppError::NotFound)?;
+    repo.find_by_id(id, scope)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let deal = repo
-        .update_stage(id, input.stage, input.position)
+        .update_stage(id, input.stage, input.position, scope)
         .await?
         .ok_or(AppError::NotFound)?;
 

@@ -37,7 +37,7 @@ pub struct BulkDeleteResponse {
 
 pub async fn list_contacts(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
     Query(filters): Query<ContactFilters>,
@@ -46,8 +46,9 @@ pub async fn list_contacts(
         .require("contacts.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     filters.validate()?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let svc = ContactService::new(state.db.clone());
-    let page: PaginatedResponse<Contact> = svc.list(&params, &filters).await?;
+    let page: PaginatedResponse<Contact> = svc.list(&params, &filters, scope).await?;
     Ok(Json(page))
 }
 
@@ -62,7 +63,8 @@ pub async fn create_contact(
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
     let svc = ContactService::new(state.db.clone());
-    let contact = svc.create(&input).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let contact = svc.create(&input, scope).await?;
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "contact_created",
@@ -84,7 +86,7 @@ pub async fn create_contact(
 
 pub async fn get_contact(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -92,7 +94,8 @@ pub async fn get_contact(
         .require("contacts.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     let svc = ContactService::new(state.db.clone());
-    Ok(Json(svc.get(id).await?))
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    Ok(Json(svc.get(id, scope).await?))
 }
 
 pub async fn update_contact(
@@ -107,7 +110,8 @@ pub async fn update_contact(
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
     let svc = ContactService::new(state.db.clone());
-    let contact = svc.update(id, &input).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let contact = svc.update(id, &input, scope).await?;
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "contact_updated",
@@ -137,7 +141,8 @@ pub async fn delete_contact(
         .require("contacts.delete")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     let svc = ContactService::new(state.db.clone());
-    svc.delete(id).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    svc.delete(id, scope).await?;
     let _ = crate::services::webhook_worker::enqueue_event(
         &state.db,
         "contact_deleted",
@@ -159,7 +164,7 @@ pub async fn delete_contact(
 
 pub async fn export_contacts(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Query(params): Query<PaginationParams>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -167,7 +172,8 @@ pub async fn export_contacts(
         .require("contacts.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
     let svc = ContactService::new(state.db.clone());
-    let csv = svc.export(params.search.as_deref()).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let csv = svc.export(params.search.as_deref(), scope).await?;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -184,7 +190,7 @@ pub async fn export_contacts(
 
 pub async fn bulk_delete_contacts(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     Json(input): Json<BulkDeleteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -193,13 +199,14 @@ pub async fn bulk_delete_contacts(
         .map_err(|_| crate::error::AppError::Forbidden)?;
     input.validate()?;
     let svc = ContactService::new(state.db.clone());
-    let deleted = svc.bulk_delete(&input.ids).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let deleted = svc.bulk_delete(&input.ids, scope).await?;
     Ok(Json(BulkDeleteResponse { deleted }))
 }
 
 pub async fn import_contacts(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
@@ -219,6 +226,7 @@ pub async fn import_contacts(
     }
 
     let svc = ContactService::new(state.db.clone());
-    let result = svc.import(&body).await?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
+    let result = svc.import(&body, scope).await?;
     Ok(Json(result))
 }

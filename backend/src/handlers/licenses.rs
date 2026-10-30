@@ -31,15 +31,27 @@ use crate::{
 /// Catálogo con estado de licencia (para gating del frontend).
 pub async fn list_modules(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Cobertura por usuario (fase 2): superadmin ve todo licenciado; el resto
+    // según licencias platform + las de su empresa.
+    let is_super: bool = sqlx::query_scalar("SELECT is_superadmin FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| AppError::Internal)?
+        .unwrap_or(false);
+    let tenant = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let modules = sqlx::query_as::<_, ModuleInfo>(
         "SELECT m.slug, m.name, m.description, m.version, m.enabled, m.route_prefix,
-            EXISTS(SELECT 1 FROM licenses l \
+            ($1 OR EXISTS(SELECT 1 FROM licenses l \
              WHERE l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > now()) \
-             AND (m.slug = ANY(l.modules) OR '*' = ANY(l.modules))) AS licensed
+             AND (m.slug = ANY(l.modules) OR '*' = ANY(l.modules)) \
+             AND (l.tenant_id IS NULL OR ($2::uuid IS NOT NULL AND l.tenant_id = $2)))) AS licensed
          FROM modules m ORDER BY m.slug",
     )
+    .bind(is_super)
+    .bind(tenant)
     .fetch_all(&state.db)
     .await?;
     Ok(Json(modules))

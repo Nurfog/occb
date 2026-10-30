@@ -74,6 +74,35 @@ pub fn hash_refresh_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
+/// Tenant para scoping de filas (fase 2, aislamiento por empresa).
+///
+/// - `None` = usuario platform (tenant NULL, incl. superadmin): sin filtro,
+///   ve todo (comportamiento legacy intacto).
+/// - `Some(t)` = usuario de empresa: solo `tenant_id = t`. Las filas legacy
+///   con NULL quedan invisibles para tenants (solo platform).
+/// - Usuario inexistente (baja con token aún vigente) -> 401.
+///
+/// Convención SQL en handlers (no mueve índices existentes, solo añade bind
+/// al final): `... AND ($N::uuid IS NULL OR tenant_id = $N)` (.bind(scope))
+/// y en detalle `WHERE id = $1 AND ($2::uuid IS NULL OR tenant_id = $2)`.
+/// Con alias de tabla: `c.tenant_id`. En escrituras: `tenant_id` =
+/// `scope` del creador (NULL para platform); updates/deletes añaden el
+/// mismo predicado (0 filas -> 404, sin filtrar existencia).
+pub async fn tenant_scope(
+    state: &crate::state::AppState,
+    user_id: &Uuid,
+) -> Result<Option<Uuid>, crate::error::AppError> {
+    match sqlx::query_scalar::<_, Option<Uuid>>("SELECT tenant_id FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| crate::error::AppError::Internal)?
+    {
+        None => Err(crate::error::AppError::Unauthorized),
+        Some(tenant) => Ok(tenant),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

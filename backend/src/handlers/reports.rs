@@ -25,14 +25,16 @@ struct StageRow {
 
 pub async fn get_pipeline_report(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("reports.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let total_row: (i64, Option<f64>) =
-        sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals")
+        sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals WHERE ($1::uuid IS NULL OR tenant_id = $1)")
+            .bind(scope)
             .fetch_one(&state.db)
             .await?;
 
@@ -43,6 +45,7 @@ pub async fn get_pipeline_report(
         r#"
         SELECT stage::text AS stage, COUNT(*) AS count, COALESCE(SUM(value)::double precision, 0.0) AS total_value
         FROM deals
+        WHERE ($1::uuid IS NULL OR tenant_id = $1)
         GROUP BY stage
         ORDER BY CASE stage
             WHEN 'lead' THEN 1
@@ -55,6 +58,7 @@ pub async fn get_pipeline_report(
         END
         "#,
     )
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
 
@@ -90,21 +94,24 @@ pub async fn get_pipeline_report(
 
 pub async fn get_win_loss_report(
     State(state): State<AppState>,
-    Extension(_claims): Extension<Claims>,
+    Extension(claims): Extension<Claims>,
     perms: UserPermissions,
 ) -> Result<impl IntoResponse, AppError> {
     perms
         .require("reports.view")
         .map_err(|_| crate::error::AppError::Forbidden)?;
+    let scope = crate::auth::tenant_scope(&state, &claims.sub).await?;
     let won_row: (i64, Option<f64>) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals WHERE stage = 'closed_won'",
+        "SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals WHERE stage = 'closed_won' AND ($1::uuid IS NULL OR tenant_id = $1)",
     )
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
     let lost_row: (i64, Option<f64>) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals WHERE stage = 'closed_lost'",
+        "SELECT COUNT(*), COALESCE(SUM(value)::double precision, 0.0) FROM deals WHERE stage = 'closed_lost' AND ($1::uuid IS NULL OR tenant_id = $1)",
     )
+    .bind(scope)
     .fetch_one(&state.db)
     .await?;
 
