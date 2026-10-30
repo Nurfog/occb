@@ -76,10 +76,14 @@ necesitas Rust local.
 ```bash
 ./scripts/install-deps.sh --check   # audita SO + stack
 sudo ./scripts/install-deps.sh      # instala SO y levanta DB + Caddy en la red del backend
-make dev                            # red + db + migraciones + backend + caddy
+make dev                            # red + db + migraciones + backend + frontend + caddy
 curl http://127.0.0.1:8000/api/v1/health   # directo
 curl http://localhost/api/v1/health        # vía Caddy
 ```
+
+Luego abre **http://localhost/setup**: valida los requisitos y crea el
+primer administrador (root). Tras instalar, el instalador se bloquea (403)
+y las cuentas las crea un admin.
 
 Sin Docker: `cd backend && DATABASE_URL=... cargo run` (lee `../.env.dev`).
 

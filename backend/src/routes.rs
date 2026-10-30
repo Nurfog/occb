@@ -50,8 +50,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/register", post(handlers::auth::register))
         .route("/api/v1/auth/refresh", post(handlers::auth::refresh));
 
-    // ── Públicas Ley 21.719 (sin JWT, rate-limit estricto anti-spam) ──
-    let privacy_public = Router::new()
+    // ── Públicas estrictas (sin JWT, rate-limit 10/min anti-abuso):
+    // solicitudes Ley 21.719 + instalador inicial (este último se
+    // autobloquea con 403 tras la primera instalación) ──
+    let strict_public = Router::new()
         .route(
             "/api/v1/privacy/requests",
             post(handlers::privacy::create_request),
@@ -60,6 +62,8 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/privacy/requests/verify",
             post(handlers::privacy::verify_request),
         )
+        .route("/api/v1/setup/status", get(handlers::setup::status))
+        .route("/api/v1/setup/install", post(handlers::setup::install))
         .layer(from_fn_with_state(
             state.clone(),
             middleware::rate_limit::strict_rate_limit_middleware,
@@ -224,7 +228,7 @@ pub fn router(state: AppState) -> Router {
             get(handlers::audit::get_entity_history),
         )
         // Privacidad Ley 21.719 (gestión staff; la creación/verificación
-        // pública vive en `privacy_public` con rate-limit estricto)
+        // pública vive en `strict_public` con rate-limit estricto)
         .route(
             "/api/v1/privacy/requests",
             get(handlers::privacy::list_requests),
@@ -524,7 +528,7 @@ pub fn router(state: AppState) -> Router {
         ));
 
     public
-        .merge(privacy_public)
+        .merge(strict_public)
         .merge(protected)
         .merge(admin)
         .merge(flow)

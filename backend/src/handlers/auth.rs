@@ -36,10 +36,10 @@ struct TokenPair {
 }
 
 #[derive(Debug, FromRow)]
-struct UserRow {
-    id: Uuid,
-    email: String,
-    name: String,
+pub(crate) struct UserRow {
+    pub(crate) id: Uuid,
+    pub(crate) email: String,
+    pub(crate) name: String,
     password_hash: String,
     created_at: DateTime<Utc>,
 }
@@ -85,8 +85,29 @@ pub async fn register(
     input.validate()?;
     // Solo-setup (contrato origen): el primer usuario es admin; después se
     // bloquea y los nuevos usuarios los crea un admin (POST /api/v1/users).
-    // Advisory lock + check en tx: evita que dos registros paralelos creen
-    // dos admins (TOCTOU).
+    // La creación vive en `create_first_admin` (compartida con el instalador).
+    let (user, access, refresh) =
+        create_first_admin(&state, &input.email, &input.name, &input.password).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(pair_response(
+            &user,
+            access,
+            refresh,
+            state.config.access_token_ttl_minutes,
+        )),
+    ))
+}
+
+/// Crea el PRIMER usuario (root/admin). Reutilizado por `register` y por el
+/// instalador (`handlers/setup.rs`): advisory lock anti-TOCTOU, perfil
+/// `Administrador`, par de tokens. Si ya hay usuarios -> 403.
+pub(crate) async fn create_first_admin(
+    state: &AppState,
+    email: &str,
+    name: &str,
+    password: &str,
+) -> Result<(UserRow, String, String), AppError> {
     let mut tx = state.db.begin().await.map_err(|_| AppError::Internal)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('register'))")
         .execute(&mut *tx)
@@ -105,13 +126,13 @@ pub async fn register(
             .await
             .map_err(|_| AppError::Internal)?;
 
-    let email = input.email.trim().to_lowercase();
-    let name = input.name.trim().to_string();
+    let email = email.trim().to_lowercase();
+    let name = name.trim().to_string();
     // Parte `name` en first/last para el esquema CRM (004).
     let mut parts = name.splitn(2, ' ');
     let first = parts.next().unwrap_or("").to_string();
     let last = parts.next().unwrap_or("").to_string();
-    let hash = password::hash_password(&input.password)?;
+    let hash = password::hash_password(password)?;
     let user = sqlx::query_as::<_, UserRow>(
         "INSERT INTO users (email, name, first_name, last_name, profile_id, password_hash)
          VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6)
@@ -138,15 +159,7 @@ pub async fn register(
         .await
         .map_err(|_| AppError::Internal)?;
     tx.commit().await.map_err(|_| AppError::Internal)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(pair_response(
-            &user,
-            access,
-            refresh,
-            state.config.access_token_ttl_minutes,
-        )),
-    ))
+    Ok((user, access, refresh))
 }
 
 pub async fn login(

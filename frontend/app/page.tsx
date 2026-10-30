@@ -64,7 +64,7 @@ export default function HomePage() {
       <main>
         <h1>OCCB</h1>
         <nav>
-          <Link href="/users">Usuarios</Link>
+          <Link href="/users">Usuarios</Link> <Link href="/setup">Instalación</Link>
         </nav>
         <h2>{mode === "login" ? "Entrar" : "Crear cuenta"}</h2>
         <form onSubmit={onSubmit}>

@@ -22,6 +22,7 @@ pub mod ready;
 pub mod related;
 pub mod reports;
 pub mod search;
+pub mod setup;
 pub mod tags;
 pub mod users;
 pub mod webhooks;
