@@ -1,4 +1,4 @@
-.PHONY: setup-dev deps deps-check net db-up db-down db-logs caddy-up caddy-down dev dev-down dev-logs stack-up stack-down migrate-dev migrate-prod backup-dev backup-prod check test fmt
+.PHONY: setup-dev deps deps-check net db-up db-down db-logs caddy-up caddy-down dev dev-down dev-logs frontend-logs stack-up stack-down migrate-dev migrate-prod backup-dev backup-prod check test fmt
 
 # Requerimientos del sistema + stack (Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE)
 deps:
@@ -47,6 +47,9 @@ stack-down: dev-down db-down
 
 dev-logs:
 	docker compose -f docker-compose.dev.yml --env-file .env.dev logs -f --tail=200
+
+frontend-logs:
+	docker compose -f docker-compose.dev.yml --env-file .env.dev logs -f --tail=200 frontend
 
 migrate-dev:
 	./scripts/migrate.sh dev

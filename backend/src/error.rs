@@ -27,6 +27,8 @@ pub enum AppError {
     RateLimited { retry_after_secs: u64 },
     #[error("servicio no disponible")]
     Unavailable,
+    #[error("módulo no licenciado: {module}")]
+    ModuleLocked { module: String },
     #[error("error interno")]
     Internal,
 }
@@ -41,6 +43,7 @@ impl AppError {
             Self::Conflict => StatusCode::CONFLICT,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ModuleLocked { .. } => StatusCode::PAYMENT_REQUIRED,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -54,6 +57,7 @@ impl AppError {
             Self::Conflict => "conflict",
             Self::RateLimited { .. } => "rate_limited",
             Self::Unavailable => "unavailable",
+            Self::ModuleLocked { .. } => "module_locked",
             Self::Internal => "internal_error",
         }
     }

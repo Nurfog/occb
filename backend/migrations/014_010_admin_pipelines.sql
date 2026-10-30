@@ -100,6 +100,11 @@ BEGIN
 END $$;
 
 -- Profiles por defecto
+-- Repara DBs legacy cuya `profiles` se creó sin estas columnas: ALTERs
+-- idempotentes antes del seed (en DBs frescas son no-op).
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT false;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 INSERT INTO profiles (name, description, is_system) VALUES
   ('Administrador', 'Acceso completo al sistema', true),
   ('Vendedor', 'Gestión de contactos, deals y actividades', true),

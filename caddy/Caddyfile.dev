@@ -1,6 +1,7 @@
-# Caddy DEV — http://localhost (sin TLS). El frontend (proyecto separado)
-# consume el API en http://localhost/api/v1/* ; debug directo en :8000.
-# "backend" resuelve por DNS interno de la red occb-dev.
+# Caddy DEV — http://localhost (sin TLS). Mismo origen: la app en `/` y el
+# API en `/api/v1/*` (así el frontend no necesita CORS ni URLs absolutas);
+# debug directo del API en :8000.
+# "backend" y "frontend" resuelven por DNS interno de la red occb-dev.
 {
 	auto_https off
 	admin off
@@ -19,8 +20,9 @@ http://localhost {
 		reverse_proxy backend:8000
 	}
 
+	# Monorepo: el frontend Next.js sirve la app; el API va por /api/*.
 	handle {
-		respond "OCCB backend (dev). Usa /api/*" 404
+		reverse_proxy frontend:3000
 	}
 
 	# Cabeceras de seguridad (el backend también las emite).

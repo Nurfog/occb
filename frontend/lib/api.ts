@@ -52,7 +52,9 @@ export class ApiError extends Error {
 }
 
 export function getApiBaseUrl(): string {
-  const raw = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+  // Mismo origen por defecto (el monorepo se sirve tras Caddy: la app en `/`
+  // y el API en `/api`). Solo se usa URL absoluta para debug directo.
+  const raw = process.env.NEXT_PUBLIC_API_URL ?? "";
   return raw.replace(/\/+$/, "");
 }
 

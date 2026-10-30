@@ -1,27 +1,32 @@
-# OCCB · Backend
+# OCCB · Monorepo (SaaS por módulos DLC)
 
 ![CI](https://github.com/Nurfog/occb/actions/workflows/ci.yml/badge.svg)
 
-API del proyecto OCCB. **Este repositorio contiene SOLO el backend** (Rust + Axum + SQLx).
+Plataforma OCCB: **backend** (Rust + Axum + SQLx) + **frontend** (Next.js)
+en un solo repositorio. Los módulos se activan por licencia (keys
+`occm_*`): base incluida (`crm`, `privacy`), DLCs con gate (`flow`).
+Ver `docs/modules/overview.md`.
 
 | Proyecto | Contenido | Dónde |
 |---|---|---|
-| `occb` (este) | API backend (contenedor principal) | aquí |
+| `occb` (este) | API backend + frontend + docs de módulos | aquí |
 | satélite DB | Postgres 18 + pgvector + Redis (dev) | `docker-compose.db.yml` (prod: proyecto aparte) |
 | satélite Caddy | reverse proxy + TLS (dev) | `docker-compose.caddy.yml` (prod: proyecto aparte) |
-| proyecto frontend | UI | aparte |
 
 DB y Caddy corren en sus propios contenedores, integrados a la **red
-principal del backend** (`occb-dev` en dev, `occb-edge` en prod).
+principal** (`occb-dev` en dev, `occb-edge` en prod).
 El backend se conecta a la DB por `DATABASE_URL` y se expone al exterior
 únicamente a través de Caddy. Nunca publica su puerto en prod.
 
 ## Arquitectura
 
 ```
-internet ──TLS──▶ Caddy ──HTTP──▶ backend:8000 ──▶ db:5432 (PG18+pgvector) + redis:6379
-   ▲              (red occb-dev/dev u occb-edge/prod, todos en la misma red)
-frontend (aparte)   :80/:443        127.0.0.1:8000 (solo dev, debug)
+internet ──TLS──▶ Caddy ──┬──HTTP──▶ frontend:3000 ──┐ mismo origen
+   ▲              (red occb-dev/dev u occb-edge/prod) │ (/api/* -> backend)
+   │               :80/:443                           ▼
+   │                        └──HTTP──▶ backend:8000 ──▶ db:5432 (PG18+pgvector) + redis:6379
+   │                                     127.0.0.1:8000 (solo dev, debug)
+frontend (aquí) ───────────┘
 ```
 
 ## Estructura

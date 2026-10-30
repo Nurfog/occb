@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "../lib/auth";
+import { ModuleGate } from "../lib/modules";
 import { ApiError } from "../lib/api";
 import type { UserPublic } from "../lib/api";
 
@@ -129,6 +130,23 @@ export default function HomePage() {
       <button type="button" onClick={() => void logout()}>
         Salir
       </button>
+      <h2>Módulos</h2>
+      <ModuleGate slug="flow">
+        <FlowPing />
+      </ModuleGate>
     </main>
   );
+}
+
+function FlowPing() {
+  const { apiFetch } = useAuth();
+  const [text, setText] = useState("Verificando DLC flow…");
+  useEffect(() => {
+    apiFetch<{ module: string; status: string }>("/api/v1/flow/ping")
+      .then((r) => setText(`Flow activo (${r.status})`))
+      .catch((e: unknown) =>
+        setText(e instanceof ApiError ? `Flow: ${e.message}` : "Flow: error")
+      );
+  }, [apiFetch]);
+  return <p className="muted">{text}</p>;
 }

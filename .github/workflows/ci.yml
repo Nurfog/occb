@@ -41,6 +41,28 @@ jobs:
       - name: Build
         run: cargo build --locked
 
+  frontend:
+    name: Frontend (types + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Instala deps (lockfile)
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build (same-origin: API vacío)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: ""
+
   migrations:
     name: Migraciones (aplican limpio en PG18+pgvector)
     runs-on: ubuntu-latest

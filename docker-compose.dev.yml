@@ -1,9 +1,10 @@
 name: occb-backend-dev
 
-# Proyecto SOLO backend (contenedor principal).
+# Proyecto monorepo: backend (API) + frontend (Next.js).
 # Crea la red "occb-dev", a la que se integran los satélites:
 #   docker-compose.db.yml    (Postgres 18 + pgvector + Redis, dev)
-#   docker-compose.caddy.yml (Caddy como servidor web, dev)
+#   docker-compose.caddy.yml (Caddy como servidor web, dev; mismo origen
+#                             app `/` -> frontend:3000, API `/api/*` -> backend:8000)
 # La DB externa debe ser alcanzable vía DATABASE_URL (.env.dev).
 
 x-logging: &logging
@@ -43,6 +44,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    logging: *logging
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Vacío = mismo origen (Caddy sirve app + API en un dominio).
+        NEXT_PUBLIC_API_URL: ""
+    image: occb-frontend:dev
+    restart: unless-stopped
+    # Puerto solo en loopback para depurar. El tráfico real entra por Caddy.
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - edge
+    user: "1001:1001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging: *logging
 
 # Red principal: el backend la crea; db y caddy (externos) se le unen.

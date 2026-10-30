@@ -1,8 +1,9 @@
 name: occb-backend-prod
 
-# Proyecto SOLO backend (prod).
+# Proyecto monorepo en prod: backend (API) + frontend (Next.js).
 # - Sin puertos publicados: solo el contenedor de Caddy (proyecto aparte,
-#   misma red Docker) alcanza al backend en 8000.
+#   misma red Docker) alcanza a backend:8000 y frontend:3000.
+#   Caddy: `/api/*` -> backend:8000, `/` -> frontend:3000 (mismo origen).
 # - DATABASE_URL / REDIS_URL apuntan a los proyectos externos.
 
 x-logging: &logging
@@ -35,6 +36,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    logging: *logging
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Vacío = mismo origen (Caddy sirve app + API en un dominio).
+        NEXT_PUBLIC_API_URL: ""
+    image: occb-frontend:prod
+    restart: unless-stopped
+    networks:
+      - edge
+    user: "1001:1001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging: *logging
 
 # Red compartida con el proyecto Caddy (él la crea o se crea con

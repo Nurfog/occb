@@ -11,7 +11,8 @@
 
 use axum::{
     Router,
-    middleware::from_fn_with_state,
+    extract::Request,
+    middleware::{Next, from_fn_with_state},
     routing::{delete, get, patch, post, put},
 };
 
@@ -347,6 +348,8 @@ pub fn router(state: AppState) -> Router {
         )
         // Pipelines (solo lectura)
         .route("/api/v1/pipelines", get(handlers::admin::list_pipelines))
+        // Módulos DLC (catálogo + estado de licencia para el frontend)
+        .route("/api/v1/modules", get(handlers::licenses::list_modules))
         // Integrations
         .route(
             "/api/v1/integrations",
@@ -428,6 +431,22 @@ pub fn router(state: AppState) -> Router {
             middleware::auth::auth_middleware,
         ));
 
+    // ── DLC flow (JWT + licencia `flow`): stub reemplazado por la
+    // implementación real en docs/modules/flow-integration-plan.md ──
+    let flow = Router::new()
+        .route("/api/v1/flow/ping", get(handlers::flow::ping))
+        .route_layer(axum::middleware::from_fn({
+            let state = state.clone();
+            move |req: Request, next: Next| {
+                let state = state.clone();
+                async move { middleware::modules::enforce_module(state, "flow", req, next).await }
+            }
+        }))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::auth::auth_middleware,
+        ));
+
     // ── Admin (JWT + admin.access) ──
     let admin = Router::new()
         .route(
@@ -482,6 +501,19 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/webhooks/{id}/deliveries",
             get(handlers::webhooks::list_deliveries),
         )
+        // Licencias DLC (admin): emitir, listar, revocar + kill switch.
+        .route(
+            "/api/v1/admin/licenses",
+            post(handlers::licenses::issue_license).get(handlers::licenses::list_licenses),
+        )
+        .route(
+            "/api/v1/admin/licenses/{id}",
+            delete(handlers::licenses::revoke_license),
+        )
+        .route(
+            "/api/v1/admin/modules/{slug}",
+            put(handlers::licenses::set_module),
+        )
         .layer(from_fn_with_state(
             state.clone(),
             middleware::auth_ext::admin_only_middleware,
@@ -495,6 +527,7 @@ pub fn router(state: AppState) -> Router {
         .merge(privacy_public)
         .merge(protected)
         .merge(admin)
+        .merge(flow)
         .layer(from_fn_with_state(
             state.clone(),
             middleware::rate_limit::rate_limit_middleware,

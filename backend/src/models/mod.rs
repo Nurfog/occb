@@ -26,6 +26,7 @@ pub mod calendar;
 pub mod document;
 pub mod email;
 pub mod lead;
+pub mod license;
 pub mod notification;
 pub mod pagination;
 pub mod privacy;
