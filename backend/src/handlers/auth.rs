@@ -134,8 +134,8 @@ pub(crate) async fn create_first_admin(
     let last = parts.next().unwrap_or("").to_string();
     let hash = password::hash_password(password)?;
     let user = sqlx::query_as::<_, UserRow>(
-        "INSERT INTO users (email, name, first_name, last_name, profile_id, password_hash)
-         VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6)
+        "INSERT INTO users (email, name, first_name, last_name, profile_id, password_hash, is_superadmin)
+         VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, TRUE)
          RETURNING id, email, name, password_hash, created_at",
     )
     .bind(&email)

@@ -7,6 +7,8 @@
 //!   gestión de solicitudes Ley 21.719 (`privacy.view`/`privacy.manage`).
 //! - Admin: users + webhooks + pipelines/perfiles/branding con
 //!   `auth_middleware` + `admin_only_middleware` (exige `admin.access`).
+//! - Superadmin (root instalado): empresas y sus administradores, con
+//!   `superadmin_only_middleware` (nunca admins de empresa).
 //! - `/metrics` NO se expone (ver middleware/metrics stub).
 
 use axum::{
@@ -527,10 +529,38 @@ pub fn router(state: AppState) -> Router {
             middleware::auth::auth_middleware,
         ));
 
+    // ── Superadmin (root instalado): empresas y sus administradores ──
+    let superadmin = Router::new()
+        .route(
+            "/api/v1/admin/tenants",
+            get(handlers::tenants::list_tenants).post(handlers::tenants::create_tenant),
+        )
+        .route(
+            "/api/v1/admin/tenants/{id}",
+            patch(handlers::tenants::set_tenant_status).delete(handlers::tenants::delete_tenant),
+        )
+        .route(
+            "/api/v1/admin/tenants/{id}/users",
+            get(handlers::tenants::list_tenant_users),
+        )
+        .route(
+            "/api/v1/admin/tenants/{id}/admins",
+            post(handlers::tenants::create_tenant_admin),
+        )
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::auth_ext::superadmin_only_middleware,
+        ))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::auth::auth_middleware,
+        ));
+
     public
         .merge(strict_public)
         .merge(protected)
         .merge(admin)
+        .merge(superadmin)
         .merge(flow)
         .layer(from_fn_with_state(
             state.clone(),

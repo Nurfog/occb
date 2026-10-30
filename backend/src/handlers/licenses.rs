@@ -83,6 +83,16 @@ pub async fn issue_license(
     let expires_at = input
         .expires_in_days
         .map(|d| Utc::now() + Duration::days(d));
+    // tenant_id opcional pero, si viene, debe existir.
+    if let Some(tid) = input.tenant_id {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1)")
+            .bind(tid)
+            .fetch_one(&state.db)
+            .await?;
+        if !exists {
+            return Err(AppError::Validation("empresa inexistente".into()));
+        }
+    }
     let row: (
         Uuid,
         String,
@@ -90,8 +100,8 @@ pub async fn issue_license(
         Option<i32>,
         Option<chrono::DateTime<Utc>>,
     ) = sqlx::query_as(
-        "INSERT INTO licenses (label, key_hash, key_prefix, modules, seats, expires_at, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '{}')) \
+        "INSERT INTO licenses (label, key_hash, key_prefix, modules, seats, expires_at, metadata, tenant_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '{}'), $8) \
              RETURNING id, label, modules, seats, expires_at",
     )
     .bind(input.label.trim())
@@ -101,6 +111,7 @@ pub async fn issue_license(
     .bind(input.seats)
     .bind(expires_at)
     .bind(input.metadata.clone())
+    .bind(input.tenant_id)
     .fetch_one(&state.db)
     .await?;
     let _ = crate::handlers::audit::insert_audit_log(
@@ -137,7 +148,7 @@ pub async fn list_licenses(
         .map_err(|_| AppError::Forbidden)?;
     let licenses = sqlx::query_as::<_, License>(
         "SELECT id, label, key_prefix, modules, seats, expires_at, \
-            revoked_at, metadata, created_at, updated_at \
+            revoked_at, tenant_id, metadata, created_at, updated_at \
          FROM licenses ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)

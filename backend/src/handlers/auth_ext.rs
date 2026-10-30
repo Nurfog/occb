@@ -180,6 +180,8 @@ struct ProfileRow {
     first_name: Option<String>,
     last_name: Option<String>,
     profile_id: Option<uuid::Uuid>,
+    is_superadmin: bool,
+    tenant_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +192,10 @@ struct ProfileResponse {
     first_name: Option<String>,
     last_name: Option<String>,
     profile_id: Option<uuid::Uuid>,
+    /// Root instalado (platform). El frontend lo usa para el dashboard.
+    is_superadmin: bool,
+    /// Empresa del usuario (NULL = platform).
+    tenant_id: Option<uuid::Uuid>,
     permissions: Vec<String>,
 }
 
@@ -198,7 +204,7 @@ pub async fn get_profile(
     Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse, AppError> {
     let user: Option<ProfileRow> = sqlx::query_as::<_, ProfileRow>(
-        "SELECT id, email, name, first_name, last_name, profile_id FROM users WHERE id = $1",
+        "SELECT id, email, name, first_name, last_name, profile_id, is_superadmin, tenant_id FROM users WHERE id = $1",
     )
     .bind(claims.sub)
     .fetch_optional(&state.db)
@@ -214,6 +220,8 @@ pub async fn get_profile(
         first_name: user.first_name,
         last_name: user.last_name,
         profile_id: user.profile_id,
+        is_superadmin: user.is_superadmin,
+        tenant_id: user.tenant_id,
         permissions,
     }))
 }

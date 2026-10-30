@@ -26,6 +26,20 @@ pub async fn auth_middleware(
         .filter(|s| !s.is_empty())
         .ok_or(AppError::Unauthorized)?;
     let claims = verify_access_token(token, &state.config)?;
+    // Empresa suspendida = sus usuarios no entran (401 genérico, sin fugas).
+    // Superadmin y usuarios sin tenant (platform) pasan siempre.
+    let blocked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users u JOIN tenants t ON t.id = u.tenant_id \
+         WHERE u.id = $1 AND u.is_superadmin = FALSE AND t.status = 'suspendida')",
+    )
+    .bind(claims.sub)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| AppError::Internal)?;
+    if blocked {
+        // Genérico a propósito: no revela si la empresa existe o su estado.
+        return Err(AppError::Unauthorized);
+    }
     req.extensions_mut().insert(claims);
     Ok(next.run(req).await)
 }

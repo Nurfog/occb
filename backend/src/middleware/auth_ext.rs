@@ -113,6 +113,18 @@ pub(crate) async fn load_permissions(
     Ok(perms)
 }
 
+/// Exige superadmin (root instalado). Solo platform-level, nunca admins de
+/// empresa: hay un único nivel por encima de todos los tenants.
+pub async fn require_superadmin(state: &AppState, user_id: &Uuid) -> Result<(), AppError> {
+    let ok: bool = sqlx::query_scalar("SELECT is_superadmin FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| AppError::Internal)?
+        .unwrap_or(false);
+    if ok { Ok(()) } else { Err(AppError::Forbidden) }
+}
+
 /// Invalida la caché de permisos de un usuario (llamar tras cambios de rol).
 pub async fn invalidate_user_permissions(user_id: &Uuid) {
     perm_cache().lock().await.remove(user_id);
@@ -184,6 +196,25 @@ pub async fn admin_only_middleware(
 
     req.extensions_mut().insert(UserPermissions(permissions));
     Ok(next.run(req).await)
+}
+
+/// Solo superadmin (root instalado). Va DESPUÉS de `auth_middleware`.
+/// No usa perfiles: hay un único nivel por encima de todos los tenants.
+#[allow(clippy::result_large_err)]
+pub async fn superadmin_only_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, Response> {
+    let claims = req
+        .extensions()
+        .get::<Claims>()
+        .cloned()
+        .ok_or_else(|| json_error(StatusCode::UNAUTHORIZED, "Unauthorized"))?;
+    match require_superadmin(&state, &claims.sub).await {
+        Ok(()) => Ok(next.run(req).await),
+        Err(_) => Err(json_error(StatusCode::FORBIDDEN, "Forbidden")),
+    }
 }
 
 /// Stub compatible de CSRF double-submit (origen: `middleware/auth.rs`).

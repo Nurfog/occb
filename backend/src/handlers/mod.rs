@@ -24,6 +24,7 @@ pub mod reports;
 pub mod search;
 pub mod setup;
 pub mod tags;
+pub mod tenants;
 pub mod users;
 pub mod webhooks;
 pub mod whatsapp;

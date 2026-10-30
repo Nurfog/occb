@@ -12,6 +12,8 @@ export interface UserPublic {
   email: string;
   name: string;
   created_at: string;
+  is_superadmin: boolean;
+  tenant_id: string | null;
 }
 
 export interface TokenPair {

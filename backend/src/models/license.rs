@@ -47,6 +47,7 @@ pub struct License {
     pub seats: Option<i32>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub tenant_id: Option<Uuid>,
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -77,6 +78,8 @@ pub struct IssueLicenseInput {
     #[validate(range(min = 1, max = 3650, message = "vigencia de 1 a 3650 días"))]
     pub expires_in_days: Option<i64>,
     pub metadata: Option<serde_json::Value>,
+    /// Empresa atada (vacío = licencia de plataforma). Debe existir.
+    pub tenant_id: Option<Uuid>,
 }
 
 impl IssueLicenseInput {

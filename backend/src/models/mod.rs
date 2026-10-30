@@ -32,6 +32,7 @@ pub mod pagination;
 pub mod privacy;
 pub mod report;
 pub mod tag;
+pub mod tenant;
 
 pub use activity::{Activity, CreateActivity, RecurrenceType, UpdateActivity};
 pub use calendar::{
