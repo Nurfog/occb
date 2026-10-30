@@ -1,0 +1,84 @@
+/* Estilos mínimos propios (sin Tailwind). */
+
+:root {
+  --fg: #111;
+  --bg: #fff;
+  --muted: #666;
+  --border: #ddd;
+  --accent: #0b5fff;
+  --error: #b00020;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+nav a {
+  margin-right: 1rem;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 360px;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+.error {
+  color: var(--error);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 0.5rem 0;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 0.4rem;
+  font-size: 0.9rem;
+}
